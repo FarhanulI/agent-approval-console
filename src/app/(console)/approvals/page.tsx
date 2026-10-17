@@ -1,17 +1,19 @@
-import { EmptyState } from "@/components/ui/empty-state";
+import { Suspense } from "react";
 import { PageHeader } from "@/components/layout/page-header";
+import { LoadingState } from "@/components/ui/loading-state";
+import { PendingActionsQueue } from "@/features/approvals/components/pending-actions-queue";
 
 export default function ApprovalsPage() {
   return (
     <>
       <PageHeader
-        title="Approvals"
-        description="Review proposed agent actions before they can proceed."
+        title="Pending Actions"
+        description="Review what AI agents propose to change, inspect the evidence, and decide which actions may proceed."
       />
-      <EmptyState
-        title="Approval queue is not implemented yet"
-        description="The queue, action data, and decision workflow will be added in later modules. No agent actions are being loaded here."
-      />
+      {/* The queue reads URL search params, which requires a Suspense boundary. */}
+      <Suspense fallback={<LoadingState label="Loading pending actions" />}>
+        <PendingActionsQueue />
+      </Suspense>
     </>
   );
 }

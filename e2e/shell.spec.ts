@@ -14,7 +14,7 @@ test.describe("desktop shell", () => {
     await expect(nav.getByRole("link", { name: "Live runs" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Audit log" })).toBeVisible();
     await expect(page.getByRole("main")).toHaveCount(1);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Approvals");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pending Actions");
     await expect(
       page.getByRole("button", { name: "Open navigation menu" }),
     ).toBeHidden();
