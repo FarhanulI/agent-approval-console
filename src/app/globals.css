@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --canvas: #f4f7f7;
+  --surface: #ffffff;
+  --surface-muted: #edf2f2;
+  --line: #d7e0e0;
+  --line-strong: #a9b8b9;
+  --fg: #19282c;
+  --fg-muted: #405258;
+  --fg-subtle: #566a70;
+  --accent: #155b52;
+  --accent-fg: #ffffff;
+  --accent-hover: #10483f;
+  --danger: #a3211f;
+  --success: #17613a;
+  --warning: #795000;
+  --info: #174f91;
+  --neutral-soft: #edf2f2;
+  --neutral-soft-fg: #405258;
+  --info-soft: #e8f1ff;
+  --info-soft-fg: #17477f;
+  --success-soft: #e8f5ec;
+  --success-soft-fg: #165332;
+  --warning-soft: #fff4d8;
+  --warning-soft-fg: #704700;
+  --danger-soft: #fff0ef;
+  --danger-soft-fg: #8a201c;
+  --accent-soft: #e5f2ef;
+  --accent-soft-fg: #155248;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --canvas: #10191d;
+    --surface: #172328;
+    --surface-muted: #202e33;
+    --line: #31434a;
+    --line-strong: #50636a;
+    --fg: #eff5f5;
+    --fg-muted: #c2d0d2;
+    --fg-subtle: #aababe;
+    --accent: #75cbbb;
+    --accent-fg: #102c28;
+    --accent-hover: #91d9cb;
+    --danger: #ff958c;
+    --success: #87d9a4;
+    --warning: #f2c66f;
+    --info: #9fc2ff;
+    --neutral-soft: #2a393e;
+    --neutral-soft-fg: #d3dfe1;
+    --info-soft: #203653;
+    --info-soft-fg: #c7dcff;
+    --success-soft: #1d3c2c;
+    --success-soft-fg: #b9efc8;
+    --warning-soft: #47391f;
+    --warning-soft-fg: #ffe1a0;
+    --danger-soft: #482827;
+    --danger-soft-fg: #ffd0cb;
+    --accent-soft: #1c3934;
+    --accent-soft-fg: #bdebe2;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-hover: var(--accent-hover);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-soft-fg: var(--neutral-soft-fg);
+  --color-info-soft: var(--info-soft);
+  --color-info-soft-fg: var(--info-soft-fg);
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-fg: var(--success-soft-fg);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-soft-fg: var(--warning-soft-fg);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-soft-fg: var(--danger-soft-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-fg: var(--accent-soft-fg);
+  /*
+   * Spacing uses the Tailwind scale. Radii: rounded-md for controls and
+   * rounded-lg for panels. Typography roles are defined below.
+   */
+  --default-transition-duration: 150ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  --shadow-overlay: 0 8px 24px rgb(16 25 29 / 0.18);
+  --text-title: 1.5rem;
+  --text-title--line-height: 2rem;
+  --text-title--font-weight: 600;
+  --text-heading: 1rem;
+  --text-heading--line-height: 1.5rem;
+  --text-heading--font-weight: 600;
+  --text-meta: 0.8125rem;
+  --text-meta--line-height: 1.25rem;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+body {
+  min-height: 100%;
+  background: var(--canvas);
+  color: var(--fg);
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
