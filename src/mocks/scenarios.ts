@@ -35,7 +35,14 @@ type ScenarioState = {
   actions: ActionsScenario;
   detail: DetailScenario;
   decision: DecisionScenario;
+  audit: AuditScenario;
 };
+
+/** Scenario for the mock audit read API (`ok` with optional delay, error, or empty). */
+export type AuditScenario =
+  | { kind: "ok"; delayMs?: number }
+  | { kind: "server-error" }
+  | { kind: "empty" };
 
 const KEY = Symbol.for("agent-approval-console.mock-scenarios");
 type Holder = { [KEY]?: ScenarioState };
@@ -46,6 +53,7 @@ function state(): ScenarioState {
     actions: { kind: "ok" },
     detail: { kind: "ok" },
     decision: { kind: "ok" },
+    audit: { kind: "ok" },
   };
   return holder[KEY];
 }
@@ -53,6 +61,7 @@ function state(): ScenarioState {
 export const getActionsScenario = () => state().actions;
 export const getDetailScenario = () => state().detail;
 export const getDecisionScenario = () => state().decision;
+export const getAuditScenario = () => state().audit;
 
 export const setActionsScenario = (next: ActionsScenario) => {
   state().actions = next;
@@ -63,13 +72,18 @@ export const setDetailScenario = (next: DetailScenario) => {
 export const setDecisionScenario = (next: DecisionScenario) => {
   state().decision = next;
 };
+export const setAuditScenario = (next: AuditScenario) => {
+  state().audit = next;
+};
 
 export const resetActionsScenario = () => setActionsScenario({ kind: "ok" });
 export const resetDetailScenario = () => setDetailScenario({ kind: "ok" });
 export const resetDecisionScenario = () => setDecisionScenario({ kind: "ok" });
+export const resetAuditScenario = () => setAuditScenario({ kind: "ok" });
 
 export function resetAllScenarios(): void {
   resetActionsScenario();
   resetDetailScenario();
   resetDecisionScenario();
+  resetAuditScenario();
 }

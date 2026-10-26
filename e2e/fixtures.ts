@@ -26,7 +26,7 @@ export async function signIn(request: APIRequestContext, username: DevUsername) 
   expect(response.ok()).toBe(true);
 }
 
-type ControlTarget = "reset" | "actions" | "detail" | "decision";
+type ControlTarget = "reset" | "actions" | "detail" | "decision" | "audit";
 
 /** Drives the server-side mock backend (scenarios, state reset). */
 export async function mockControl(

@@ -3,18 +3,21 @@ import { resolvePrincipal } from "@/lib/auth/principal";
 import { isMockModeEnabled } from "@/lib/config/mock-mode";
 import { errorResponse, getRequestId, hasTrustedOrigin, jsonResponse, unauthenticated } from "@/lib/server/http";
 import { resetMockActionState } from "@/mocks/action-store";
+import { resetMockAuditState } from "@/mocks/audit-store";
 import {
   resetAllScenarios,
   setActionsScenario,
+  setAuditScenario,
   setDecisionScenario,
   setDetailScenario,
   type ActionsScenario,
+  type AuditScenario,
   type DecisionScenario,
   type DetailScenario,
 } from "@/mocks/scenarios";
 
 const bodySchema = z.strictObject({
-  target: z.enum(["reset", "actions", "detail", "decision"]),
+  target: z.enum(["reset", "actions", "detail", "decision", "audit"]),
   scenario: z.object({ kind: z.string() }).loose().optional(),
 });
 
@@ -40,8 +43,10 @@ export async function POST(request: Request) {
   if (target === "reset") {
     resetAllScenarios();
     resetMockActionState();
+    resetMockAuditState();
   } else if (scenario) {
     // Test-only input from an authenticated tester; shape is trusted here.
+    if (target === "audit") setAuditScenario(scenario as AuditScenario);
     if (target === "actions") setActionsScenario(scenario as ActionsScenario);
     if (target === "detail") setDetailScenario(scenario as DetailScenario);
     if (target === "decision") setDecisionScenario(scenario as DecisionScenario);
