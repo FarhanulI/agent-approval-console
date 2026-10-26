@@ -12,14 +12,23 @@ const command =
 
 export default defineConfig({
   testDir: "./e2e",
+  // Mock state lives in the single server process, so tests run serially.
+  workers: 1,
   use: {
     baseURL: `http://localhost:${port}`,
   },
   webServer: {
     command,
-    url: `http://localhost:${port}/approvals`,
-    // MSW serves /api/actions in the browser; the flag is not a secret.
-    env: { NEXT_PUBLIC_API_MOCKING: "enabled" },
+    url: `http://localhost:${port}/login`,
+    // Test-only values; none of these is a real secret or credential. The
+    // mock backend and dev login exist only because of this flag.
+    env: {
+      NEXT_PUBLIC_API_MOCKING: "enabled",
+      ALLOW_MOCK_BACKEND_IN_PRODUCTION: "true",
+      APP_URL: `http://localhost:${port}`,
+      AUTH_SECRET: "e2e-only-secret-e2e-only-secret-0123456789",
+      AUTH_DEV_PASSWORD: "e2e-only-password",
+    },
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

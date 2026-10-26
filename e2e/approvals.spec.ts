@@ -1,25 +1,14 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, mockControl, test, type Page } from "./fixtures";
 
 // Fixtures: 47 deterministic actions, 10 per page, newest first by default.
 // The newest action is act_0047; the oldest is act_0001.
 
-type MockControls = {
-  setActionsScenario(scenario: { kind: string; delayMs?: number }): void;
-  resetActionsScenario(): void;
-};
-
 async function setScenario(page: Page, scenario: { kind: string; delayMs?: number }) {
-  await page.evaluate(
-    (value) =>
-      (window as unknown as { __mock: MockControls }).__mock.setActionsScenario(value),
-    scenario,
-  );
+  await mockControl(page.context().request, "actions", scenario);
 }
 
 async function resetScenario(page: Page) {
-  await page.evaluate(() =>
-    (window as unknown as { __mock: MockControls }).__mock.resetActionsScenario(),
-  );
+  await mockControl(page.context().request, "actions", { kind: "ok" });
 }
 
 const dataRows = (page: Page) => page.getByRole("table").locator("tbody tr");
@@ -151,7 +140,7 @@ test.describe("pending actions queue (desktop)", () => {
 
     const alert = page.getByRole("main").getByRole("alert");
     await expect(alert).toContainText("Pending actions could not be loaded");
-    await expect(alert).toContainText("req_mock_500");
+    await expect(alert).toContainText(/req_[0-9a-f-]{36}/);
 
     await resetScenario(page);
     await alert.getByRole("button", { name: "Retry" }).click();

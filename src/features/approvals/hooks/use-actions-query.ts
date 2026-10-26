@@ -4,9 +4,15 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { actionsService } from "../services";
 import type { ActionListQuery, ActionsService } from "../types";
 
-/** Every server-affecting parameter is part of the key. */
+/**
+ * Every server-affecting parameter is part of the key. List and detail keys
+ * share the `["approvals", "actions"]` prefix but are disjoint: invalidating
+ * `lists()` never touches a detail entry and vice versa.
+ */
 export const approvalKeys = {
   all: ["approvals"] as const,
+  details: () => [...approvalKeys.all, "actions", "detail"] as const,
+  detail: (actionId: string) => [...approvalKeys.details(), actionId] as const,
   lists: () => [...approvalKeys.all, "actions", "list"] as const,
   list: (query: ActionListQuery) =>
     [

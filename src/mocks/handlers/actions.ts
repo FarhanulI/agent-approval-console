@@ -1,31 +1,19 @@
 import { delay, http, HttpResponse } from "msw";
 import { parseActionListQuery } from "@/features/approvals/schemas/action-list-query";
-import { actionFixtures } from "../fixtures/actions";
+import { listMockActions } from "../action-store";
 import { queryActions } from "../actions-list";
+import { getActionsScenario } from "../scenarios";
 
-/**
- * Test/dev scenario switch. Handlers default to "ok". Tests flip it to
- * simulate failures without touching the UI or the service.
- */
-export type ActionsScenario =
-  | { kind: "ok"; delayMs?: number }
-  | { kind: "server-error"; requestId?: string }
-  | { kind: "malformed" }
-  | { kind: "empty" };
-
-let scenario: ActionsScenario = { kind: "ok" };
-
-export function setActionsScenario(next: ActionsScenario): void {
-  scenario = next;
-}
-
-export function resetActionsScenario(): void {
-  scenario = { kind: "ok" };
-}
+export {
+  resetActionsScenario,
+  setActionsScenario,
+  type ActionsScenario,
+} from "../scenarios";
 
 export const actionsHandlers = [
   http.get("*/api/actions", async ({ request }) => {
     const parsed = parseActionListQuery(new URL(request.url).searchParams);
+    const scenario = getActionsScenario();
 
     if (!parsed.success) {
       return HttpResponse.json(
@@ -63,7 +51,7 @@ export const actionsHandlers = [
       case "empty":
         return HttpResponse.json(queryActions([], parsed.data));
       default:
-        return HttpResponse.json(queryActions(actionFixtures, parsed.data));
+        return HttpResponse.json(queryActions(listMockActions(), parsed.data));
     }
   }),
 ];

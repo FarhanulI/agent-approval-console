@@ -1,3 +1,4 @@
+import { actionDetailHandlers } from "./action-details";
 import { actionsHandlers } from "./actions";
 
-export const handlers = [...actionsHandlers];
+export const handlers = [...actionsHandlers, ...actionDetailHandlers];
