@@ -1,0 +1,277 @@
+import { z } from "zod";
+import { authorize } from "@/lib/auth/policy";
+import { resolvePrincipal } from "@/lib/auth/principal";
+import {
+  errorResponse,
+  forbidden,
+  getRequestId,
+  jsonResponse,
+  unauthenticated,
+} from "@/lib/server/http";
+import { BackendError } from "@/features/approvals/server/actions-backend";
+import {
+  consumeRunStreamDisconnect,
+  getRunsScenario,
+} from "@/mocks/scenarios";
+import type { RunEvent } from "../schemas/run";
+import type { RunsBackend, RunContext } from "./runs-backend";
+import { getRunsBackend } from "./get-runs-backend";
+
+const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const eventIdSchema = z.string().max(128);
+type Deps = { backend?: RunsBackend };
+type RunReadAuthorization =
+  | { ok: false; response: Response }
+  | { ok: true; context: RunContext };
+
+function backendFailure(error: unknown, requestId: string) {
+  if (error instanceof BackendError) {
+    if (error.kind === "unavailable") {
+      return errorResponse(
+        503,
+        "runs_unavailable",
+        "Run monitoring is not available in this environment.",
+        requestId,
+      );
+    }
+    return errorResponse(
+      error.kind === "timeout" ? 504 : 502,
+      "bad_gateway",
+      "The run backend could not complete the request.",
+      requestId,
+    );
+  }
+  return errorResponse(
+    500,
+    "internal_error",
+    "An unexpected error occurred.",
+    requestId,
+  );
+}
+
+async function authorizeRunRead(
+  request: Request,
+  requestId: string,
+): Promise<RunReadAuthorization> {
+  const auth = await resolvePrincipal(request);
+  if (!auth.authenticated) {
+    return { ok: false, response: unauthenticated(requestId) };
+  }
+  if (!authorize(auth.principal, "run:view").allowed) {
+    return { ok: false, response: forbidden(requestId) };
+  }
+  return {
+    ok: true,
+    context: { requestId, principal: auth.principal } satisfies RunContext,
+  };
+}
+
+export async function handleListRuns(
+  request: Request,
+  deps: Deps = {},
+): Promise<Response> {
+  const requestId = getRequestId(request);
+  const authorized = await authorizeRunRead(request, requestId);
+  if (!authorized.ok) return authorized.response;
+
+  const backend = deps.backend ?? getRunsBackend();
+  if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
+    return jsonResponse({ items: [{ id: "invalid" }] }, requestId);
+  }
+  try {
+    const items = await backend.list(authorized.context);
+    if (
+      items.some(
+        (entry) =>
+          !authorize(authorized.context.principal, "run:view", {
+            tenantId: entry.tenantId,
+          }).allowed,
+      )
+    ) {
+      return errorResponse(
+        502,
+        "bad_gateway",
+        "The run backend could not complete the request.",
+        requestId,
+      );
+    }
+    return jsonResponse({ items: items.map((entry) => entry.summary) }, requestId);
+  } catch (error) {
+    return backendFailure(error, requestId);
+  }
+}
+
+export async function handleGetRun(
+  request: Request,
+  runId: string,
+  deps: Deps = {},
+): Promise<Response> {
+  const requestId = getRequestId(request);
+  const authorized = await authorizeRunRead(request, requestId);
+  if (!authorized.ok) return authorized.response;
+  if (!RUN_ID_PATTERN.test(runId)) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "The run identifier is invalid.",
+      requestId,
+    );
+  }
+
+  const backend = deps.backend ?? getRunsBackend();
+  if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
+    return jsonResponse({ run: { id: runId } }, requestId);
+  }
+  try {
+    const stored = await backend.get(authorized.context, runId);
+    if (
+      !stored ||
+      !authorize(authorized.context.principal, "run:view", {
+        tenantId: stored.tenantId,
+      }).allowed
+    ) {
+      return runNotFound(requestId);
+    }
+    return jsonResponse({ run: stored.detail }, requestId);
+  } catch (error) {
+    return backendFailure(error, requestId);
+  }
+}
+
+export async function handleSubscribeRunEvents(
+  request: Request,
+  runId: string,
+  deps: Deps = {},
+): Promise<Response> {
+  const requestId = getRequestId(request);
+  const authorized = await authorizeRunRead(request, requestId);
+  if (!authorized.ok) return authorized.response;
+  if (!RUN_ID_PATTERN.test(runId)) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "The run identifier is invalid.",
+      requestId,
+    );
+  }
+
+  const backend = deps.backend ?? getRunsBackend();
+  if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
+    return createRunEventStream(request, [], requestId, {
+      malformed: true,
+      delayMs: 0,
+    });
+  }
+
+  const lastEventId = request.headers.get("last-event-id");
+  if (lastEventId && !eventIdSchema.safeParse(lastEventId).success) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "The event cursor is invalid.",
+      requestId,
+    );
+  }
+
+  try {
+    const result = await backend.getEvents(
+      authorized.context,
+      runId,
+      lastEventId ?? undefined,
+    );
+    if (
+      !result ||
+      !authorize(authorized.context.principal, "run:view", {
+        tenantId: result.tenantId,
+      }).allowed
+    ) {
+      return runNotFound(requestId);
+    }
+    if (backend.kind === "mock" && consumeRunStreamDisconnect()) {
+      return createRunEventStream(request, [], requestId, {
+        disconnect: true,
+        delayMs: 0,
+      });
+    }
+    const scenario = getRunsScenario();
+    return createRunEventStream(request, result.events, requestId, {
+      delayMs: scenario.kind === "delayed" ? scenario.delayMs ?? 300 : 80,
+    });
+  } catch (error) {
+    return backendFailure(error, requestId);
+  }
+}
+
+function runNotFound(requestId: string) {
+  return errorResponse(404, "not_found", "Run not found.", requestId);
+}
+
+function createRunEventStream(
+  request: Request,
+  events: readonly RunEvent[],
+  requestId: string,
+  options: { delayMs: number; malformed?: boolean; disconnect?: boolean },
+) {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const enqueue = (value: string) =>
+        controller.enqueue(encoder.encode(value));
+      try {
+        if (options.disconnect) {
+          enqueue("retry: 100\n\n");
+          controller.close();
+          return;
+        }
+        if (options.malformed) {
+          enqueue('event: run-event\ndata: {"invalid":true}\n\n');
+        } else {
+          for (const event of events) {
+            if (request.signal.aborted) break;
+            enqueue(
+              `id: ${event.id}\nevent: run-event\ndata: ${JSON.stringify(event)}\n\n`,
+            );
+            if (options.delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+            }
+          }
+        }
+        if (request.signal.aborted) {
+          controller.close();
+          return;
+        }
+        heartbeat = setInterval(() => {
+          if (!request.signal.aborted) enqueue(": keepalive\n\n");
+        }, 15_000);
+      } catch (error) {
+        if (request.signal.aborted) {
+          controller.close();
+          return;
+        }
+        controller.error(error);
+      }
+    },
+    cancel() {
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+
+  request.signal.addEventListener(
+    "abort",
+    () => {
+      if (heartbeat) clearInterval(heartbeat);
+    },
+    { once: true },
+  );
+
+  return new Response(stream, {
+    headers: {
+      "cache-control": "no-cache, no-store, no-transform",
+      connection: "keep-alive",
+      "content-type": "text/event-stream; charset=utf-8",
+      "x-accel-buffering": "no",
+      "x-request-id": requestId,
+    },
+  });
+}

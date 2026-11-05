@@ -36,6 +36,8 @@ type ScenarioState = {
   detail: DetailScenario;
   decision: DecisionScenario;
   audit: AuditScenario;
+  runs: RunsScenario;
+  runStreamDisconnected: boolean;
 };
 
 /** Scenario for the mock audit read API (`ok` with optional delay, error, or empty). */
@@ -43,6 +45,16 @@ export type AuditScenario =
   | { kind: "ok"; delayMs?: number }
   | { kind: "server-error" }
   | { kind: "empty" };
+
+export type RunsScenario =
+  | { kind: "ok" }
+  | { kind: "empty" }
+  | { kind: "server-error" }
+  | { kind: "malformed" }
+  | { kind: "delayed"; delayMs?: number }
+  | { kind: "duplicate-events" }
+  | { kind: "out-of-order-events" }
+  | { kind: "disconnect-once" };
 
 const KEY = Symbol.for("agent-approval-console.mock-scenarios");
 type Holder = { [KEY]?: ScenarioState };
@@ -54,6 +66,8 @@ function state(): ScenarioState {
     detail: { kind: "ok" },
     decision: { kind: "ok" },
     audit: { kind: "ok" },
+    runs: { kind: "ok" },
+    runStreamDisconnected: false,
   };
   return holder[KEY];
 }
@@ -62,6 +76,18 @@ export const getActionsScenario = () => state().actions;
 export const getDetailScenario = () => state().detail;
 export const getDecisionScenario = () => state().decision;
 export const getAuditScenario = () => state().audit;
+export const getRunsScenario = () => state().runs;
+export function consumeRunStreamDisconnect(): boolean {
+  const current = state();
+  if (
+    current.runs.kind !== "disconnect-once" ||
+    current.runStreamDisconnected
+  ) {
+    return false;
+  }
+  current.runStreamDisconnected = true;
+  return true;
+}
 
 export const setActionsScenario = (next: ActionsScenario) => {
   state().actions = next;
@@ -75,15 +101,22 @@ export const setDecisionScenario = (next: DecisionScenario) => {
 export const setAuditScenario = (next: AuditScenario) => {
   state().audit = next;
 };
+export const setRunsScenario = (next: RunsScenario) => {
+  const current = state();
+  current.runs = next;
+  current.runStreamDisconnected = false;
+};
 
 export const resetActionsScenario = () => setActionsScenario({ kind: "ok" });
 export const resetDetailScenario = () => setDetailScenario({ kind: "ok" });
 export const resetDecisionScenario = () => setDecisionScenario({ kind: "ok" });
 export const resetAuditScenario = () => setAuditScenario({ kind: "ok" });
+export const resetRunsScenario = () => setRunsScenario({ kind: "ok" });
 
 export function resetAllScenarios(): void {
   resetActionsScenario();
   resetDetailScenario();
   resetDecisionScenario();
   resetAuditScenario();
+  resetRunsScenario();
 }

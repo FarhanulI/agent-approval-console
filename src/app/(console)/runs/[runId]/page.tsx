@@ -1,36 +1,23 @@
-import { Suspense } from "react";
 import { PageHeader } from "@/components/layout/page-header";
-import { Skeleton } from "@/components/ui/skeleton";
+import { RunDetailView } from "@/features/runs/components/run-detail-view";
 
 type RunPageProps = {
   params: Promise<{ runId: string }>;
 };
 
-async function RunRouteContext({ params }: RunPageProps) {
+export default async function RunDetailsPage({ params }: RunPageProps) {
   const { runId } = await params;
-
-  return (
-    <p className="text-sm text-fg-muted">
-      Run reference: <code className="font-mono text-fg">{runId}</code>. Run
-      data and live monitoring are not implemented in this module.
-    </p>
-  );
-}
-
-export default function RunDetailsPage({ params }: RunPageProps) {
   return (
     <>
       <PageHeader
         title="Run details"
         breadcrumbs={[
           { label: "Live runs", href: "/runs" },
-          { label: "Run details" },
+          { label: runId },
         ]}
-        description="This route reserves space for future agent run monitoring."
+        description="Inspect the run snapshot and its ordered execution events."
       />
-      <Suspense fallback={<Skeleton className="h-14 w-full" />}>
-        <RunRouteContext params={params} />
-      </Suspense>
+      <RunDetailView runId={runId} />
     </>
   );
 }

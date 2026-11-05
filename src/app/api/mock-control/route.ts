@@ -10,14 +10,16 @@ import {
   setAuditScenario,
   setDecisionScenario,
   setDetailScenario,
+  setRunsScenario,
   type ActionsScenario,
   type AuditScenario,
   type DecisionScenario,
   type DetailScenario,
+  type RunsScenario,
 } from "@/mocks/scenarios";
 
 const bodySchema = z.strictObject({
-  target: z.enum(["reset", "actions", "detail", "decision", "audit"]),
+  target: z.enum(["reset", "actions", "detail", "decision", "audit", "runs"]),
   scenario: z.object({ kind: z.string() }).loose().optional(),
 });
 
@@ -50,6 +52,7 @@ export async function POST(request: Request) {
     if (target === "actions") setActionsScenario(scenario as ActionsScenario);
     if (target === "detail") setDetailScenario(scenario as DetailScenario);
     if (target === "decision") setDecisionScenario(scenario as DecisionScenario);
+    if (target === "runs") setRunsScenario(scenario as RunsScenario);
   }
   return jsonResponse({ ok: true }, requestId);
 }
