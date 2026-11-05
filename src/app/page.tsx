@@ -75,16 +75,19 @@ export default function Home() {
             </div>
           </div>
           <div className="mt-7 flex flex-wrap gap-2 border-t border-slate-100 pt-5">
-            {["Next.js App Router", "TypeScript strict", "Tailwind CSS", "ESLint"].map(
-              (item) => (
-                <span
-                  key={item}
-                  className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700"
-                >
-                  {item}
-                </span>
-              ),
-            )}
+            {[
+              "Next.js App Router",
+              "TypeScript strict",
+              "Tailwind CSS",
+              "ESLint",
+            ].map((item) => (
+              <span
+                key={item}
+                className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700"
+              >
+                {item}
+              </span>
+            ))}
           </div>
         </section>
       </div>

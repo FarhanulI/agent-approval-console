@@ -37,8 +37,8 @@ async function LoginContent({
 
   const sso = Boolean(
     process.env.AUTH_OIDC_ISSUER &&
-      process.env.AUTH_OIDC_CLIENT_ID &&
-      process.env.AUTH_OIDC_CLIENT_SECRET,
+    process.env.AUTH_OIDC_CLIENT_ID &&
+    process.env.AUTH_OIDC_CLIENT_SECRET,
   );
 
   return (

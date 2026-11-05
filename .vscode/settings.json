@@ -6,6 +6,10 @@
         },
         "npm run lint": true,
         "New-Item": true,
-        "Out-Null": true
+        "Out-Null": true,
+        "/^New-Item -ItemType Directory \"C:\\\\Users\\\\Farhanul Islam\\\\Desktop\\\\Projects\\\\agent-approval-console\\\\docs\\\\integrations\" \\| Out-Null$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

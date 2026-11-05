@@ -88,6 +88,22 @@ test.describe("audit log", () => {
     await expect(page.getByText(/Execution has not been performed/).first()).toBeVisible();
   });
 
+  test("refreshes a cached audit query after a decision", async ({ page }) => {
+    await page.goto("/audit?q=act_0001");
+    await expect(rows(page)).toHaveCount(1);
+
+    await page.goto("/approvals/act_0001");
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("button", { name: "Confirm approval" }).click();
+    await expect(page.getByText("Approval recorded")).toBeVisible();
+
+    await page.goto("/audit?q=act_0001");
+    await expect(rows(page)).toHaveCount(2);
+    await expect(
+      page.getByText("Approval accepted by the backend. Execution has not been performed."),
+    ).toBeVisible();
+  });
+
   test("TENANT-001: another tenant's events are not readable", async ({ browser }) => {
     const both = await browser.newContext({ baseURL: ORIGIN });
     const main = await browser.newContext({ baseURL: ORIGIN });
