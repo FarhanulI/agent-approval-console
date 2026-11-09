@@ -5,19 +5,23 @@ A human-supervision console for reviewing and monitoring AI agent actions. See [
 ## Project foundation
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The `APP_URL` environment variable is optional and defaults to `http://localhost:3000`. To configure it, copy `.env.example` to `.env.local`.
+Open [http://localhost:3000](http://localhost:3000). Copy `.env.example` to `.env.local` and configure `AUTH_SECRET`; to run the mock demo, also set `NEXT_PUBLIC_API_MOCKING=enabled` and `AUTH_DEV_PASSWORD`.
 
 ## Checks
 
 ```bash
 npm run lint
 npm run typecheck
+npm test
+npm audit --omit=dev
 npm run build
 ```
+
+Production configuration, readiness semantics, security boundaries, CI, and known deployment blockers are documented in [the production readiness guide](./docs/deployment/production-readiness.md).
 
 ## Stack
 

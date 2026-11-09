@@ -25,7 +25,13 @@ describe("AUTH-001 proxy first layer", () => {
   });
 
   it("keeps /login and Auth.js routes public (no redirect loop)", async () => {
-    for (const path of ["/login", "/api/auth/csrf", "/api/auth/callback/credentials"]) {
+    for (const path of [
+      "/login",
+      "/api/auth/csrf",
+      "/api/auth/callback/credentials",
+      "/api/health/live",
+      "/api/health/ready",
+    ]) {
       const response = await proxy(req(path));
       expect(response.headers.get("location")).toBeNull();
       expect(response.status).toBe(200);

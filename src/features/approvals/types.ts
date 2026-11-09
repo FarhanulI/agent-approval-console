@@ -6,6 +6,10 @@ import type {
   PendingAction,
   RiskLevel,
 } from "./contracts";
+import type {
+  BulkDecisionRequest,
+  BulkDecisionResult,
+} from "./schemas/bulk-decision";
 import type { BrowserDecisionRequest } from "./schemas/decision-request";
 
 /**
@@ -60,6 +64,10 @@ export type DecideActionInput = BrowserDecisionRequest & {
   idempotencyKey?: string;
 };
 
+export type BulkDecisionInput = Omit<BulkDecisionRequest, "decisions"> & {
+  decisions: Array<Omit<BulkDecisionRequest["decisions"][number], "idempotencyKey">>;
+};
+
 /** The only thing the UI depends on; MSW and the real backend sit behind it. */
 export interface ActionsService {
   /**
@@ -82,4 +90,7 @@ export interface ActionsService {
    * automatically. See `ActionsServiceErrorKind` for outcome semantics.
    */
   decideAction(input: DecideActionInput): Promise<DecisionResult>;
+
+  /** Proposed BFF operation; the unavailable bridge adapter never sends it. */
+  bulkDecision(input: BulkDecisionRequest): Promise<BulkDecisionResult>;
 }

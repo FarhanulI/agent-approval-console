@@ -12,6 +12,7 @@ import { toAuditEventDto, type AuditEventRecord } from "../schemas/audit-event";
 import { parseAuditEventQuery } from "../schemas/audit-query";
 import type { AuditBackend, AuditContext, NewAuditEvent } from "./audit-backend";
 import { getAuditBackend } from "./get-audit-backend";
+import { logServerEvent } from "@/lib/server/logger";
 
 const EVENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -19,6 +20,10 @@ type Deps = { audit?: AuditBackend };
 
 function auditFailure(error: unknown, requestId: string) {
   if (error instanceof BackendError) {
+    logServerEvent("warn", "audit-bff", "backend_request_failed", {
+      requestId,
+      errorCode: error.kind,
+    });
     if (error.kind === "unavailable") {
       return errorResponse(
         503,
@@ -34,6 +39,10 @@ function auditFailure(error: unknown, requestId: string) {
       requestId,
     );
   }
+  logServerEvent("error", "audit-bff", "unexpected_backend_error", {
+    requestId,
+    errorCode: "internal_error",
+  });
   return errorResponse(500, "internal_error", "An unexpected error occurred.", requestId);
 }
 
@@ -113,10 +122,9 @@ export async function recordAuditEvent(
   try {
     await audit.record(ctx, event);
   } catch {
-    if (process.env.NODE_ENV !== "test") {
-      console.error(
-        JSON.stringify({ scope: "audit", event: "audit_record_failed", requestId: ctx.requestId }),
-      );
-    }
+    logServerEvent("error", "audit-bff", "audit_record_failed", {
+      requestId: ctx.requestId,
+      errorCode: "audit_write_failed",
+    });
   }
 }

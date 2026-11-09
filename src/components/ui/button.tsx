@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils/cn";
 
 const buttonStyles = cva(
-  "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:pointer-events-none disabled:opacity-60",
+  "inline-flex items-center justify-center gap-2 cursor-pointer rounded-md font-medium transition-colors disabled:pointer-events-none disabled:opacity-60",
   {
     variants: {
       variant: {

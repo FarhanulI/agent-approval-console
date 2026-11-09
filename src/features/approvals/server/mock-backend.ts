@@ -12,13 +12,110 @@ import {
   getDecisionScenario,
   getDetailScenario,
 } from "@/mocks/scenarios";
-import { BackendError, type ActionsBackend } from "./actions-backend";
+import { authorize } from "@/lib/auth/policy";
+import {
+  BackendError,
+  type ActionsBackend,
+  type BackendContext,
+  type BulkDecideOutcome,
+  type DecideCommand,
+  type DecideOutcome,
+} from "./actions-backend";
 
 /**
  * In-memory backend for development and tests. MOCK ONLY: its tenant scoping,
  * version check, idempotent replay and atomic commit are simulations and prove
  * nothing about `erp-mcp-bridge`.
  */
+async function decideMock(
+  ctx: BackendContext,
+  { command, actionId, tenantId, idempotencyKey }: DecideCommand,
+): Promise<DecideOutcome> {
+  const action = getMockAction(actionId);
+  if (!action || action.targetRecord.tenantId !== tenantId) {
+    return { kind: "rejected", code: "not_found" };
+  }
+  if (
+    !authorize(ctx.principal, `action:${command.decision}`, { tenantId }).allowed
+  ) {
+    return { kind: "rejected", code: "forbidden" };
+  }
+
+  const scenario = getDecisionScenario();
+  if (scenario.kind === "ok" && scenario.delayMs) await sleep(scenario.delayMs);
+  switch (scenario.kind) {
+    case "conflict":
+      return { kind: "rejected", code: "version_conflict" };
+    case "invalid-transition":
+      return { kind: "rejected", code: "invalid_transition" };
+    case "forbidden":
+      return { kind: "rejected", code: "forbidden" };
+    case "server-error":
+    case "malformed":
+      throw new BackendError("upstream-error", "Mock upstream failure.");
+    case "network-error":
+      throw new BackendError("timeout", "Mock connection failure.");
+    default:
+      break;
+  }
+
+  const scope = `${ctx.principal.userId}|${idempotencyKey}`;
+  const fingerprint = JSON.stringify([
+    tenantId,
+    actionId,
+    command.decision,
+    command.recordVersion,
+    command.reason ?? "",
+  ]);
+  const recorded = getRecordedDecision(scope);
+  if (recorded) {
+    if (recorded.fingerprint !== fingerprint) {
+      return { kind: "rejected", code: "idempotency_key_reuse" };
+    }
+    return {
+      kind: "replayed",
+      result: {
+        actionId,
+        decision: command.decision,
+        status: recorded.result.status,
+        recordVersion: recorded.result.recordVersion,
+        message:
+          "This decision was already recorded; returning the original result.",
+      },
+    };
+  }
+
+  const committed = commitMockDecision(
+    actionId,
+    {
+      decision: command.decision,
+      reason: command.reason,
+      recordVersion: command.recordVersion,
+    },
+    command.actorId,
+  );
+  if (!committed.ok) return { kind: "rejected", code: committed.code };
+
+  recordDecision(scope, {
+    fingerprint,
+    result: { status: committed.status, recordVersion: committed.recordVersion },
+  });
+
+  if (scenario.kind === "lost-response") {
+    throw new BackendError("timeout", "Mock response lost after commit.");
+  }
+  return {
+    kind: "committed",
+    result: {
+      actionId,
+      decision: command.decision,
+      status: committed.status,
+      recordVersion: committed.recordVersion,
+      message: "Decision recorded by the mock API. Execution has not been performed.",
+    },
+  };
+}
+
 export function createMockBackend(): ActionsBackend {
   return {
     kind: "mock",
@@ -63,61 +160,42 @@ export function createMockBackend(): ActionsBackend {
         : { kind: "key-reuse" };
     },
 
-    async decide(ctx, { command, actionId, tenantId, idempotencyKey }) {
-      const scenario = getDecisionScenario();
-      if (scenario.kind === "ok" && scenario.delayMs) await sleep(scenario.delayMs);
-      switch (scenario.kind) {
-        case "conflict":
-          return { kind: "rejected", code: "version_conflict" };
-        case "invalid-transition":
-          return { kind: "rejected", code: "invalid_transition" };
-        case "forbidden":
-          return { kind: "rejected", code: "forbidden" };
-        case "server-error":
-        case "malformed":
-          throw new BackendError("upstream-error", "Mock upstream failure.");
-        case "network-error":
-          throw new BackendError("timeout", "Mock connection failure.");
-        default:
-          break;
+    decide: decideMock,
+
+    async bulkDecide(ctx, commands) {
+      const outcomes: BulkDecideOutcome[] = [];
+      for (const command of commands) {
+        const { idempotencyKey, ...bulkCommand } = command;
+        const fullCommand: DecideCommand = {
+          actionId: command.actionId,
+          tenantId: command.tenantId,
+          idempotencyKey,
+          command: {
+            decision: command.decision,
+            reason: command.reason,
+            recordVersion: command.recordVersion,
+            actorId: ctx.principal.userId,
+          },
+        };
+        try {
+          const outcome = await decideMock(ctx, fullCommand);
+          outcomes.push({
+            actionId: command.actionId,
+            decision: command.decision,
+            ...outcome,
+          });
+        } catch (error) {
+          if (error instanceof BackendError && error.kind === "unavailable") {
+            throw error;
+          }
+          outcomes.push({
+            actionId: bulkCommand.actionId,
+            decision: bulkCommand.decision,
+            kind: "outcome_unknown",
+          });
+        }
       }
-
-      const committed = commitMockDecision(
-        actionId,
-        {
-          decision: command.decision,
-          reason: command.reason,
-          recordVersion: command.recordVersion,
-        },
-        command.actorId,
-      );
-      if (!committed.ok) return { kind: "rejected", code: committed.code };
-
-      recordDecision(
-        `${ctx.principal.userId}|${tenantId}|${actionId}|${command.decision}|${idempotencyKey}`,
-        {
-          fingerprint: JSON.stringify([
-            command.decision,
-            command.recordVersion,
-            command.reason ?? "",
-          ]),
-          result: { status: committed.status, recordVersion: committed.recordVersion },
-        },
-      );
-
-      if (scenario.kind === "lost-response") {
-        throw new BackendError("timeout", "Mock response lost after commit.");
-      }
-      return {
-        kind: "committed",
-        result: {
-          actionId,
-          decision: command.decision,
-          status: committed.status,
-          recordVersion: committed.recordVersion,
-          message: "Decision recorded by the mock API. Execution has not been performed.",
-        },
-      };
+      return outcomes;
     },
   };
 }

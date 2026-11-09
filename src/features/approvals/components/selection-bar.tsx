@@ -2,17 +2,21 @@ import { Button } from "@/components/ui/button";
 
 export type SelectionBarProps = {
   selectedCount: number;
+  decisionsEnabled: boolean;
+  pending: boolean;
+  onApprove: () => void;
+  onReject: () => void;
   onClear: () => void;
 };
 
-const HINT_ID = "bulk-decision-unavailable";
-
-/**
- * Selection foundation only. The bulk-decision contract exists
- * (`bulkDecisionRequestSchema`) but executing decisions is out of scope for
- * this module, so the decision buttons are disabled and never report success.
- */
-export function SelectionBar({ selectedCount, onClear }: SelectionBarProps) {
+export function SelectionBar({
+  selectedCount,
+  decisionsEnabled,
+  pending,
+  onApprove,
+  onReject,
+  onClear,
+}: SelectionBarProps) {
   if (selectedCount === 0) return null;
 
   return (
@@ -25,19 +29,36 @@ export function SelectionBar({ selectedCount, onClear }: SelectionBarProps) {
         on this page
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled aria-describedby={HINT_ID}>
+        <Button
+          size="sm"
+          disabled={!decisionsEnabled || pending}
+          aria-keyshortcuts="A"
+          onClick={onApprove}
+        >
           Approve selected
         </Button>
-        <Button size="sm" variant="danger" disabled aria-describedby={HINT_ID}>
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={!decisionsEnabled || pending}
+          aria-keyshortcuts="R"
+          onClick={onReject}
+        >
           Reject selected
         </Button>
-        <Button size="sm" variant="ghost" onClick={onClear}>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onClear}
+          disabled={pending}
+        >
           Clear selection
         </Button>
       </div>
-      <p id={HINT_ID} className="text-meta text-fg-muted">
-        Bulk decisions are not available yet. Nothing has been approved or
-        rejected.
+      <p className="text-meta text-fg-muted">
+        {decisionsEnabled
+          ? "Shortcuts: A opens approve confirmation; R opens reject confirmation. Confirmation is always required."
+          : "Decisions are unavailable in this environment."}
       </p>
     </section>
   );

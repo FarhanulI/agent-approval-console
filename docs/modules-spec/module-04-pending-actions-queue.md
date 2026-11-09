@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Give reviewers a queue of agent-proposed actions that can be searched, filtered, sorted and paged, backed by a typed service and MSW mock API. This module is the list view only. It does not implement the Action Detail workflow, approve/reject execution, Live Run streaming or the Audit Log.
+Give reviewers a queue of agent-proposed actions that can be searched, filtered, sorted and paged, backed by a typed service and mock API. This module records the original list/selection foundation. Bulk approve/reject and keyboard behavior are specified separately in [Module 11A](./module-11a-bulk-decisions.md).
 
 ## Scope
 
@@ -11,13 +11,13 @@ Give reviewers a queue of agent-proposed actions that can be searched, filtered,
 - MSW handlers and deterministic fixtures for the list.
 - TanStack Query for server state; TanStack Table (v9) for sorting, selection and pagination.
 - Server-side search, filtering (status, risk), sorting and pagination, synchronised with the URL.
-- Row selection with a safe, non-executing selection bar.
+- Row selection with a non-executing selection bar in the original Module 4 scope.
 - Loading, empty, no-match, error, background-refetch and stale-data states.
 - Navigation from each row to `/approvals/{actionId}`.
 - Unit, component and Playwright E2E tests.
 
 **Out of scope**
-- Action Detail view, approve/reject/bulk mutations, execution, SSE, React Flow, Audit Log, auth changes, integration with the real `erp-mcp-bridge`, redesign of the Module 3 shell.
+- Action Detail view, single-item decisions, execution, SSE, React Flow, Audit Log, auth changes, integration with the real `erp-mcp-bridge`, redesign of the Module 3 shell. Mock-backed queue bulk decisions and shortcuts are added separately in Module 11A.
 
 ## Constraints
 
@@ -85,9 +85,9 @@ Searchable fields are a mock assumption: id, title, summary, target label, targe
 - Status and risk render as text badges; tone is only reinforcement.
 - The table sits in a focusable, labelled scroll region so the page itself does not overflow on mobile.
 
-### Selection
+### Selection foundation
 - Only `pending` rows are selectable. Selection is scoped to the current query and cleared when the query changes; IDs not present in the loaded data are dropped.
-- Approve/Reject selected are disabled with an explanatory message. "Clear selection" works.
+- Selection is scoped to the current query/page and pending actions only. The original implementation left bulk decisions disabled; [Module 11A](./module-11a-bulk-decisions.md) completes mock-backed decisions, confirmation, per-item results and keyboard shortcuts.
 - While placeholder data is shown, selection and pagination are disabled.
 
 ### States
@@ -128,7 +128,7 @@ E2E runs through `playwright.config.ts`. By default it starts `next dev`; with `
 - Search, filters, sort and pagination run server-side and are reflected in the URL.
 - Every state in the table above is handled explicitly and tested.
 - Rows link to the action detail route using the real id.
-- Selection never executes or reports a decision.
+- Selection alone never executes or reports a decision. A bulk decision requires explicit confirmation and reports each per-item outcome.
 - `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and the Playwright suite pass.
 - `contracts.ts` and Module 3 shell components are unchanged.
 
@@ -136,10 +136,10 @@ E2E runs through `playwright.config.ts`. By default it starts `next dev`; with `
 
 - Sort parameters are a proposed extension; real backend support is unconfirmed.
 - No action-type or date-range filter and no aggregate counts, because the contract lacks them.
-- Bulk decisions are disabled by design.
+- Real-backend bulk decisions remain unavailable until the `erp-mcp-bridge` contract is verified.
 - Fixed page size of 10; no page-size selector.
 - Browser mocking requires `NEXT_PUBLIC_API_MOCKING=enabled` (for example in `.env.local`).
 
 ## Next Module
 
-Action Detail View: `getAction`, evidence and record changes, single-item approve/reject with `recordVersion`, and conflict handling, before any bulk execution.
+Action Detail View is specified in Module 5. Queue bulk behavior is extended in [Module 11A](./module-11a-bulk-decisions.md); it remains mock-only until the bridge contract is verified.

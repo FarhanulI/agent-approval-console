@@ -5,6 +5,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import { z } from "zod";
 import { SESSION_MAX_AGE_SECONDS, getAuthSecret, shouldUseSecureCookies } from "./config";
 import { isDevLoginAvailable, verifyDevCredentials } from "./dev-users";
+import { parseOidcConfiguration } from "./oidc-config";
 import { ROLES } from "./policy";
 import { safeCallbackPath } from "./redirect";
 
@@ -31,10 +32,13 @@ const oidcProfileSchema = z.object({
 function buildProviders(): Provider[] {
   const providers: Provider[] = [];
 
-  const issuer = process.env.AUTH_OIDC_ISSUER;
-  const clientId = process.env.AUTH_OIDC_CLIENT_ID;
-  const clientSecret = process.env.AUTH_OIDC_CLIENT_SECRET;
-  if (issuer && clientId && clientSecret) {
+  const oidc = parseOidcConfiguration({
+    AUTH_OIDC_ISSUER: process.env.AUTH_OIDC_ISSUER,
+    AUTH_OIDC_CLIENT_ID: process.env.AUTH_OIDC_CLIENT_ID,
+    AUTH_OIDC_CLIENT_SECRET: process.env.AUTH_OIDC_CLIENT_SECRET,
+  });
+  if (oidc.kind === "configured") {
+    const { issuer, clientId, clientSecret } = oidc.value;
     providers.push({
       id: "oidc",
       name: "Single sign-on",

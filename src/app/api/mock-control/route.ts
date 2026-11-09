@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { resolvePrincipal } from "@/lib/auth/principal";
 import { isMockModeEnabled } from "@/lib/config/mock-mode";
-import { errorResponse, getRequestId, hasTrustedOrigin, jsonResponse, unauthenticated } from "@/lib/server/http";
+import {
+  errorResponse,
+  getRequestId,
+  hasTrustedOrigin,
+  jsonResponse,
+  readBoundedBody,
+  unauthenticated,
+} from "@/lib/server/http";
 import { resetMockActionState } from "@/mocks/action-store";
 import { resetMockAuditState } from "@/mocks/audit-store";
 import {
@@ -22,6 +29,7 @@ const bodySchema = z.strictObject({
   target: z.enum(["reset", "actions", "detail", "decision", "audit", "runs"]),
   scenario: z.object({ kind: z.string() }).loose().optional(),
 });
+const MAX_CONTROL_BODY_BYTES = 8 * 1024;
 
 /**
  * TEST/DEV ONLY control plane for the in-memory mock backend (scenarios and
@@ -38,7 +46,21 @@ export async function POST(request: Request) {
   const auth = await resolvePrincipal(request);
   if (!auth.authenticated) return unauthenticated(requestId);
 
-  const parsed = bodySchema.safeParse(await request.json().catch(() => null));
+  const body = await readBoundedBody(request, MAX_CONTROL_BODY_BYTES);
+  if (!body.ok && body.reason === "too_large") {
+    return errorResponse(413, "payload_too_large", "The request body is too large.", requestId);
+  }
+  if (!body.ok) {
+    return errorResponse(400, "invalid_request", "Invalid control request.", requestId);
+  }
+
+  let json: unknown = null;
+  try {
+    json = JSON.parse(body.text);
+  } catch {
+    // The strict schema below returns the same safe error for malformed JSON.
+  }
+  const parsed = bodySchema.safeParse(json);
   if (!parsed.success) return errorResponse(400, "invalid_request", "Invalid control request.", requestId);
 
   const { target, scenario } = parsed.data;

@@ -29,12 +29,15 @@ A human-supervision console for AI agent actions (approve/reject, live runs, aud
 - **MSW:** `src/mocks/` holds deterministic fixtures, pure list logic (`actions-list.ts`), scenario state (`scenarios.ts`, shared via `globalThis`) and handlers used by `msw/node` adapter tests. The browser worker was removed; E2E switches scenarios via `POST /api/mock-control` (`e2e/fixtures.ts`) and signs in through Auth.js. Vitest adapter tests use `msw/node` with an absolute `baseUrl`.
 - **Queue state:** the URL is the single source of truth for `q`, `status`, `risk`, `sort`, `page` (`utils/queue-state.ts`, `hooks/use-queue-url-state.ts`); any change except `page` resets to page 1. Table sorting/pagination are TanStack *manual* modes driven by URL state. Row selection is local but scoped to the current query and ignored while placeholder (stale) data is shown. Bulk decisions are intentionally disabled UI.
 - Pages that use `useSearchParams` need a `Suspense` boundary.
+- **Operations/security (Module 10):** `next.config.ts` applies browser security headers; HSTS is only for production HTTPS `APP_URL`. Public `/api/health/live` is liveness only; `/api/health/ready` returns `mode: mock` for simulation and `503` while the bridge adapter is unavailable. Server logs use the allow-listed `lib/server/logger.ts`; never log exception messages, bodies, evidence or credentials. Decision rate limiting is process-local (30/user/minute), not distributed.
+- **Production environment:** `AUTH_SECRET` (32+ non-whitespace characters), HTTPS `APP_URL`, and a complete `AUTH_OIDC_*` configuration are required for real production use. Keep mock flags unset in real deployments. Mock action/decision/audit/run state is in-memory and non-durable.
 
 ## Testing notes
 
 - Vitest default environment is `node`; component tests opt into jsdom per file with `// @vitest-environment jsdom` and call `cleanup` in `afterEach` (no globals/setup file). Navigation is mocked with a small URL store (see `pending-actions-queue.test.tsx`).
 - Existing Module 3 shell tests use `renderToStaticMarkup`.
 - No automated accessibility tool (axe) is installed; don't claim an a11y audit.
+- `npm audit --omit=dev` is the production dependency release gate. The full audit may still report moderate ESLint-chain findings; do not downgrade `eslint-config-next` to silence them.
 
 ## Workflow (from `.github/copilot-instructions.md`)
 

@@ -7,6 +7,7 @@ import type {
 } from "@/features/approvals/contracts";
 import type { Principal } from "@/lib/auth/principal";
 import type { ActionListQuery } from "../types";
+import type { BulkDecisionItemRequest } from "../schemas/bulk-decision";
 
 export type BackendContext = {
   requestId: string;
@@ -41,9 +42,52 @@ export type DecideCommand = {
 
 export type DecideOutcome =
   | { kind: "committed"; result: DecisionResult }
+  | { kind: "replayed"; result: DecisionResult }
   | {
       kind: "rejected";
-      code: "not_found" | "version_conflict" | "invalid_transition" | "forbidden";
+      code:
+        | "not_found"
+        | "version_conflict"
+        | "invalid_transition"
+        | "forbidden"
+        | "idempotency_key_reuse";
+    };
+
+export type BulkDecideCommand = Omit<
+  BulkDecisionItemRequest,
+  "idempotencyKey"
+> & {
+  tenantId: string;
+};
+
+export type BulkDecideOutcome =
+  | {
+      actionId: string;
+      decision: "approve" | "reject";
+      kind: "committed";
+      result: DecisionResult;
+    }
+  | {
+      actionId: string;
+      decision: "approve" | "reject";
+      kind: "rejected";
+      code:
+        | "not_found"
+        | "version_conflict"
+        | "invalid_transition"
+        | "forbidden"
+        | "idempotency_key_reuse";
+    }
+  | {
+      actionId: string;
+      decision: "approve" | "reject";
+      kind: "replayed";
+      result: DecisionResult;
+    }
+  | {
+      actionId: string;
+      decision: "approve" | "reject";
+      kind: "outcome_unknown";
     };
 
 export type RecordedLookup =
@@ -69,4 +113,9 @@ export interface ActionsBackend {
     fingerprint: string,
   ): Promise<RecordedLookup>;
   decide(ctx: BackendContext, command: DecideCommand): Promise<DecideOutcome>;
+  /** Each item is an independent transition; the batch is not transactional. */
+  bulkDecide(
+    ctx: BackendContext,
+    commands: readonly (BulkDecideCommand & { idempotencyKey: string })[],
+  ): Promise<BulkDecideOutcome[]>;
 }

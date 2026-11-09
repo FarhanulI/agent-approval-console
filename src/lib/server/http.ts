@@ -79,3 +79,61 @@ export function isJsonRequest(request: Request): boolean {
     .toLowerCase()
     .startsWith("application/json");
 }
+
+export type BoundedBodyResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: "too_large" | "unreadable" };
+
+/** Reads at most `maxBytes` from an untrusted request body. */
+export async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+): Promise<BoundedBodyResult> {
+  const contentLength = request.headers.get("content-length");
+  if (
+    contentLength &&
+    /^\d+$/.test(contentLength) &&
+    Number(contentLength) > maxBytes
+  ) {
+    await request.body?.cancel().catch(() => undefined);
+    return { ok: false, reason: "too_large" };
+  }
+
+  if (!request.body) return { ok: true, text: "" };
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytesRead = 0;
+  let text = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: "too_large" };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { ok: true, text };
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return { ok: false, reason: "unreadable" };
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export function tooManyRequests(requestId: string, retryAfterSeconds: number) {
+  const response = errorResponse(
+    429,
+    "rate_limited",
+    "Too many requests. Please try again later.",
+    requestId,
+  );
+  response.headers.set("retry-after", String(retryAfterSeconds));
+  return response;
+}

@@ -7,7 +7,7 @@ import { env } from "@/lib/config/env";
  */
 export function getAuthSecret(): string | undefined {
   const secret = process.env.AUTH_SECRET;
-  return secret && secret.length >= 32 ? secret : undefined;
+  return secret && secret.trim().length >= 32 ? secret : undefined;
 }
 
 /** Session lifetime. Short, because JWT sessions cannot be revoked server-side. */

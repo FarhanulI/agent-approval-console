@@ -148,15 +148,15 @@ test.describe("pending actions queue (desktop)", () => {
     await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
   });
 
-  test("selects and clears rows; bulk decisions stay disabled", async ({ page }) => {
+  test("selects and clears rows; bulk decision controls are available", async ({ page }) => {
     await page.goto("/approvals");
     await expect(dataRows(page)).toHaveCount(10);
 
     const boxes = page.getByRole("checkbox", { name: /^Select action:/ });
     await boxes.first().check();
     await expect(page.getByText("1 action selected on this page")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve selected" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Reject selected" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Approve selected" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Reject selected" })).toBeEnabled();
 
     await page
       .getByRole("checkbox", { name: "Select all pending actions on this page" })
@@ -174,6 +174,31 @@ test.describe("pending actions queue (desktop)", () => {
     await page.getByRole("button", { name: "Clear selection" }).click();
     await expect(page.getByText(/selected on this page/)).toHaveCount(0);
     await expect(boxes.first()).not.toBeChecked();
+  });
+
+  test("confirms a bulk approval and shows per-item outcomes", async ({ page }) => {
+    await page.goto("/approvals");
+    await expect(dataRows(page)).toHaveCount(10);
+
+    const boxes = page.getByRole("checkbox", { name: /^Select action:/ });
+    await boxes.nth(0).check();
+    await boxes.nth(1).check();
+    const approveButton = page.getByRole("button", { name: "Approve selected" });
+    await approveButton.focus();
+    await page.keyboard.press("a");
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "Confirm bulk approval" })).toBeVisible();
+    await page.keyboard.press("r");
+    await expect(dialog.getByRole("heading", { name: "Confirm bulk approval" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Bulk decision results" })).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: /Confirm approval of 2 actions/i }).click();
+    const results = page.getByRole("region", { name: "Bulk decision results" });
+    await expect(results.getByRole("listitem")).toHaveCount(2);
+    await expect(results).toContainText("approved — Approval accepted.");
+    await expect(results).toContainText("Execution has not been performed.");
+    await expect(page.getByText(/selected on this page/)).toHaveCount(0);
   });
 
   test("drops the selection when the page changes", async ({ page }) => {

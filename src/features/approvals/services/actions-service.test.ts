@@ -12,7 +12,7 @@ import { ActionsServiceError } from "./actions-service-error";
 
 const BASE = "http://api.test";
 const server = setupServer(...handlers);
-const service = createHttpActionsService({ baseUrl: BASE });
+const service = createHttpActionsService({ baseUrl: BASE, decisionsEnabled: true });
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
@@ -126,5 +126,97 @@ describe("createHttpActionsService.listActions", () => {
     const pending = service.listActions({}, { signal: controller.signal });
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("createHttpActionsService.bulkDecision", () => {
+  const decisions = [
+    {
+      actionId: "act_0001",
+      decision: "approve" as const,
+      recordVersion: 1,
+      idempotencyKey: "bulk-key-000000000001",
+    },
+    {
+      actionId: "act_0002",
+      decision: "reject" as const,
+      recordVersion: 4,
+      idempotencyKey: "bulk-key-000000000002",
+    },
+  ];
+
+  it("sends the strict item-keyed payload and validates per-item outcomes", async () => {
+    let seen: unknown;
+    server.use(
+      http.post(`${BASE}/api/actions/bulk-decision`, async ({ request }) => {
+        seen = await request.json();
+        return HttpResponse.json({
+          results: [
+            {
+              actionId: "act_0001",
+              decision: "approve",
+              outcome: "approved",
+              status: "approved",
+              recordVersion: 2,
+              message: "Approval accepted.",
+            },
+            {
+              actionId: "act_0002",
+              decision: "reject",
+              outcome: "conflict",
+              message: "The action changed.",
+            },
+          ],
+        });
+      }),
+    );
+
+    const result = await service.bulkDecision({ decisions });
+    expect(seen).toEqual({ decisions });
+    expect(result.results.map((item) => item.outcome)).toEqual([
+      "approved",
+      "conflict",
+    ]);
+  });
+
+  it("classifies an unconfirmable response as an unknown outcome", async () => {
+    server.use(
+      http.post(`${BASE}/api/actions/bulk-decision`, () =>
+        HttpResponse.json({
+          results: [
+            {
+              actionId: "act_0001",
+              decision: "approve",
+              outcome: "approved",
+              status: "approved",
+              recordVersion: 2,
+              message: "Approval accepted.",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(
+      await failure(service.bulkDecision({ decisions })),
+    ).toMatchObject({ kind: "unknown-outcome" });
+  });
+
+  it("keeps the real-backend unavailable response distinct from unknown", async () => {
+    server.use(
+      http.post(`${BASE}/api/actions/bulk-decision`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "decisions_unavailable",
+              message: "No verified backend is configured.",
+            },
+          },
+          { status: 503 },
+        ),
+      ),
+    );
+    expect(
+      await failure(service.bulkDecision({ decisions })),
+    ).toMatchObject({ kind: "unavailable", status: 503 });
   });
 });

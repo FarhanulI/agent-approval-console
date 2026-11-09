@@ -36,6 +36,8 @@ Implement the user's ten modules as separate, approval-gated work units:
 - Never invent compatibility with undocumented `erp-mcp-bridge` endpoints.
 - Prefer Server Components unless client-side interactivity is needed.
 - Handle loading, empty, stale, error, partial-success, and reconnecting states explicitly.
+- Route/server operational behavior is centralized in `src/lib/server`: JSON logs use the allow-listed logger (never raw errors, bodies, evidence or credentials), decision rate limits are process-local, and API responses include a safe request ID. Public `/api/health/live` is liveness only; `/api/health/ready` identifies mock mode and remains not-ready while the verified bridge is unavailable.
+- Production requires an HTTPS `APP_URL`, a valid server-only `AUTH_SECRET`, and complete OIDC configuration when using the real authentication/backend path. Keep `NEXT_PUBLIC_API_MOCKING` and `ALLOW_MOCK_BACKEND_IN_PRODUCTION` unset in real deployments. Mock actions, decisions and audit entries are in-memory and non-durable.
 
 ## Safety and Correctness
 - Backend authorization is mandatory for every sensitive operation.

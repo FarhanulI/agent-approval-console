@@ -16,6 +16,7 @@ import {
 import type { RunEvent } from "../schemas/run";
 import type { RunsBackend, RunContext } from "./runs-backend";
 import { getRunsBackend } from "./get-runs-backend";
+import { logServerEvent } from "@/lib/server/logger";
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const eventIdSchema = z.string().max(128);
@@ -26,6 +27,10 @@ type RunReadAuthorization =
 
 function backendFailure(error: unknown, requestId: string) {
   if (error instanceof BackendError) {
+    logServerEvent("warn", "runs-bff", "backend_request_failed", {
+      requestId,
+      errorCode: error.kind,
+    });
     if (error.kind === "unavailable") {
       return errorResponse(
         503,
@@ -34,6 +39,10 @@ function backendFailure(error: unknown, requestId: string) {
         requestId,
       );
     }
+    logServerEvent("error", "runs-bff", "unexpected_backend_error", {
+      requestId,
+      errorCode: "internal_error",
+    });
     return errorResponse(
       error.kind === "timeout" ? 504 : 502,
       "bad_gateway",
@@ -249,6 +258,10 @@ function createRunEventStream(
           controller.close();
           return;
         }
+        logServerEvent("error", "runs-bff", "event_stream_failed", {
+          requestId,
+          errorCode: "stream_error",
+        });
         controller.error(error);
       }
     },

@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
+import { getSecurityHeaders } from "./src/lib/server/security-headers";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   experimental: {
     agentFeedback: true,
   },
@@ -13,6 +13,17 @@ const nextConfig: NextConfig = {
         source: "/",
         destination: "/approvals",
         permanent: false,
+      },
+    ];
+  },
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: getSecurityHeaders({
+          nodeEnv: process.env.NODE_ENV,
+          appUrl: process.env.APP_URL ?? "http://localhost:3000",
+        }),
       },
     ];
   },

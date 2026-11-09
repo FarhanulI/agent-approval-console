@@ -11,8 +11,12 @@ import {
   hasTrustedOrigin,
   jsonResponse,
   notFound,
+  readBoundedBody,
+  tooManyRequests,
   unauthenticated,
 } from "@/lib/server/http";
+import { consumeRateLimit } from "@/lib/server/rate-limit";
+import { logServerEvent } from "@/lib/server/logger";
 import { parseActionListQuery } from "../schemas/action-list-query";
 import type {
   AuditDetails,
@@ -24,27 +28,32 @@ import { getAuditBackend } from "@/features/audit/server/get-audit-backend";
 import { recordAuditEvent } from "@/features/audit/server/handlers";
 import { browserDecisionRequestSchema } from "../schemas/decision-request";
 import {
+  bulkDecisionRequestSchema,
+  bulkDecisionResultSchema,
+  type BulkDecisionItemResult,
+} from "../schemas/bulk-decision";
+import {
   BackendError,
   type ActionsBackend,
   type BackendContext,
+  type BulkDecideCommand,
 } from "./actions-backend";
 import { getBackend } from "./get-backend";
 
 const ACTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_BODY_BYTES = 8 * 1024;
+const MAX_BULK_BODY_BYTES = 24 * 1024;
 
 type Deps = { backend?: ActionsBackend; audit?: AuditBackend };
-
-/** Security-relevant events only; never bodies, cookies or tokens. */
-function logSecurityEvent(event: Record<string, unknown>): void {
-  if (process.env.NODE_ENV === "test") return;
-  console.info(JSON.stringify({ scope: "approvals-bff", ...event }));
-}
 
 /** Maps backend failures to sanitized errors. `decision` preserves uncertainty. */
 function backendFailure(error: unknown, requestId: string, decision: boolean) {
   if (error instanceof BackendError) {
+    logServerEvent("warn", "approvals-bff", "backend_request_failed", {
+      requestId,
+      errorCode: error.kind,
+    });
     if (error.kind === "unavailable") {
       return decision
         ? errorResponse(
@@ -68,6 +77,10 @@ function backendFailure(error: unknown, requestId: string, decision: boolean) {
         requestId,
       );
     }
+    logServerEvent("error", "approvals-bff", "unexpected_backend_error", {
+      requestId,
+      errorCode: "internal_error",
+    });
     return errorResponse(
       error.kind === "timeout" ? 504 : 502,
       "bad_gateway",
@@ -122,10 +135,10 @@ export async function handleListActions(request: Request, deps: Deps = {}) {
         }).allowed,
     );
     if (leaked) {
-      logSecurityEvent({
-        event: "list_tenant_leak_blocked",
+      logServerEvent("error", "approvals-bff", "tenant_leak_blocked", {
         requestId,
         userId: principal.userId,
+        errorCode: "tenant_scope_violation",
       });
       return errorResponse(
         502,
@@ -208,7 +221,10 @@ export async function handleDecision(
   const requestId = getRequestId(request);
 
   if (!hasTrustedOrigin(request)) {
-    logSecurityEvent({ event: "decision_denied", reason: "origin", requestId });
+    logServerEvent("warn", "approvals-bff", "decision_denied", {
+      requestId,
+      reason: "origin",
+    });
     return errorResponse(
       403,
       "invalid_origin",
@@ -245,12 +261,11 @@ export async function handleDecision(
     });
 
   if (!authorize(principal, permission).allowed) {
-    logSecurityEvent({
-      event: "decision_denied",
+    logServerEvent("warn", "approvals-bff", "decision_denied", {
       reason: "permission",
       requestId,
       userId: principal.userId,
-      actionId,
+      resourceId: actionId,
     });
     // Audit only when the action is in one of the user's own tenants: recording
     // attempts on other tenants' actions would expose them across tenants.
@@ -268,6 +283,19 @@ export async function handleDecision(
       );
     }
     return forbidden(requestId);
+  }
+
+  const rateLimit = consumeRateLimit(`decision:${principal.userId}`, {
+    limit: 30,
+    windowMs: 60_000,
+  });
+  if (!rateLimit.allowed) {
+    logServerEvent("warn", "approvals-bff", "decision_rate_limited", {
+      requestId,
+      userId: principal.userId,
+      errorCode: "rate_limited",
+    });
+    return tooManyRequests(requestId, rateLimit.retryAfterSeconds);
   }
 
   if (
@@ -300,8 +328,8 @@ export async function handleDecision(
     );
   }
 
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) {
+  const boundedBody = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (!boundedBody.ok && boundedBody.reason === "too_large") {
     return errorResponse(
       413,
       "payload_too_large",
@@ -309,9 +337,17 @@ export async function handleDecision(
       requestId,
     );
   }
+  if (!boundedBody.ok) {
+    return errorResponse(
+      400,
+      "invalid_request",
+      "The decision request is invalid.",
+      requestId,
+    );
+  }
   let json: unknown = null;
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(boundedBody.text);
   } catch {
     // handled by schema validation below
   }
@@ -346,20 +382,21 @@ export async function handleDecision(
       ) {
         return forbidden(requestId);
       }
-      logSecurityEvent({
-        event: "decision_denied",
+      logServerEvent("warn", "approvals-bff", "decision_denied", {
         reason: "tenant_or_missing",
         requestId,
         userId: principal.userId,
-        actionId,
+        resourceId: actionId,
       });
       return notFound(requestId);
     }
     if (tenantId === undefined) return notFound(requestId);
     knownTenant = tenantId;
 
-    const scope = `${principal.userId}|${tenantId}|${actionId}|${decision}|${idempotencyKey}`;
+    const scope = `${principal.userId}|${idempotencyKey}`;
     const fingerprint = JSON.stringify([
+      tenantId,
+      actionId,
       decision,
       body.recordVersion,
       body.reason ?? "",
@@ -446,12 +483,12 @@ export async function handleDecision(
     });
 
     if (outcome.kind === "rejected") {
-      logSecurityEvent({
-        event: "decision_rejected",
-        code: outcome.code,
+      logServerEvent("warn", "approvals-bff", "decision_rejected", {
+        errorCode: outcome.code,
         requestId,
         userId: principal.userId,
-        actionId,
+        resourceId: actionId,
+        decision,
       });
       switch (outcome.code) {
         case "not_found":
@@ -465,6 +502,13 @@ export async function handleDecision(
             { decision },
           );
           return forbidden(requestId);
+        case "idempotency_key_reuse":
+          return errorResponse(
+            422,
+            "idempotency_key_reuse",
+            "This Idempotency-Key was used for a different request.",
+            requestId,
+          );
         case "version_conflict":
           await audit_(
             tenantId,
@@ -521,6 +565,30 @@ export async function handleDecision(
       );
     }
     const result = checked.data;
+    if (
+      result.actionId !== actionId ||
+      result.decision !== decision ||
+      result.status !== (decision === "approve" ? "approved" : "rejected")
+    ) {
+      await audit_(
+        tenantId,
+        "decision.outcome_unknown",
+        "unknown",
+        "The decision outcome could not be confirmed; it may or may not have been recorded.",
+        { decision, recordVersion: body.recordVersion },
+      );
+      return errorResponse(
+        502,
+        "decision_outcome_unknown",
+        "The backend did not confirm the decision. It may or may not have been recorded.",
+        requestId,
+      );
+    }
+    if (outcome.kind === "replayed") {
+      return jsonResponse(result, requestId, {
+        headers: { "idempotency-replayed": "true" },
+      });
+    }
     // "Accepted" is not "executed": execution is a separate state this console never claims.
     await audit_(
       tenantId,
@@ -536,21 +604,14 @@ export async function handleDecision(
         resultingStatus: result.status,
       },
     );
-    logSecurityEvent({
-      event: "decision_recorded",
+    logServerEvent("info", "approvals-bff", "decision_recorded", {
       requestId,
       userId: principal.userId,
-      actionId,
+      resourceId: actionId,
       decision,
     });
     return jsonResponse(result, requestId);
   } catch (error) {
-    logSecurityEvent({
-      event: "decision_error",
-      requestId,
-      userId: principal.userId,
-      actionId,
-    });
     if (
       knownTenant &&
       error instanceof BackendError &&
@@ -567,3 +628,444 @@ export async function handleDecision(
     return backendFailure(error, requestId, true);
   }
 }
+
+    /**
+     * `POST /api/actions/bulk-decision` is a proposed BFF-only mock workflow.
+     * Authentication is shared by the request, while tenant, permission, status,
+     * version and idempotency are checked independently for every item. The
+     * backend operation is per-item and is not an all-or-nothing transaction.
+     */
+    export async function handleBulkDecision(
+      request: Request,
+      deps: Deps = {},
+    ) {
+      const requestId = getRequestId(request);
+      if (!hasTrustedOrigin(request)) {
+        return errorResponse(
+          403,
+          "invalid_origin",
+          "The request origin is not allowed.",
+          requestId,
+        );
+      }
+
+      const auth = await resolvePrincipal(request);
+      if (!auth.authenticated) return unauthenticated(requestId);
+      const { principal } = auth;
+
+      if (
+        !(request.headers.get("content-type") ?? "")
+          .toLowerCase()
+          .startsWith("application/json")
+      ) {
+        return errorResponse(
+          415,
+          "unsupported_media_type",
+          "The request must be application/json.",
+          requestId,
+        );
+      }
+
+      const boundedBody = await readBoundedBody(request, MAX_BULK_BODY_BYTES);
+      if (!boundedBody.ok && boundedBody.reason === "too_large") {
+        return errorResponse(
+          413,
+          "payload_too_large",
+          "The request body is too large.",
+          requestId,
+        );
+      }
+      if (!boundedBody.ok) {
+        return errorResponse(
+          400,
+          "invalid_request",
+          "The bulk decision request is invalid.",
+          requestId,
+        );
+      }
+
+      let json: unknown = null;
+      try {
+        json = JSON.parse(boundedBody.text);
+      } catch {
+        // The strict schema below returns the same safe error for malformed JSON.
+      }
+      const parsed = bulkDecisionRequestSchema.safeParse(json);
+      if (!parsed.success) {
+        return errorResponse(
+          400,
+          "invalid_request",
+          "The bulk decision request is invalid.",
+          requestId,
+          {
+            fields: parsed.error.issues.map(
+              (issue) => issue.path.join(".") || "(body)",
+            ),
+          },
+        );
+      }
+
+      const backend = deps.backend ?? getBackend();
+      const audit = deps.audit ?? getAuditBackend();
+      const ctx: BackendContext = { requestId, principal };
+      const results = new Map<string, BulkDecisionItemResult>();
+      const commands: Array<BulkDecideCommand & { idempotencyKey: string }> = [];
+      const itemAudit = (
+        item: (typeof parsed.data.decisions)[number],
+        tenantId: string,
+        eventType: AuditEventType,
+        outcome: AuditOutcome,
+        summary: string,
+        details?: AuditDetails,
+      ) =>
+        recordAuditEvent(audit, ctx, {
+          tenantId,
+          eventType,
+          outcome,
+          summary,
+          details,
+          actorType: "user",
+          actorId: principal.userId,
+          actionId: item.actionId,
+          requestId,
+        });
+
+      for (const item of parsed.data.decisions) {
+        const rateLimit = consumeRateLimit(`decision:${principal.userId}`, {
+          limit: 30,
+          windowMs: 60_000,
+        });
+        if (!rateLimit.allowed) {
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "failed",
+            message: "This decision was not sent because the decision rate limit was reached.",
+          });
+          continue;
+        }
+
+        let action;
+        try {
+          action = await backend.getAction(ctx, item.actionId);
+        } catch (error) {
+          if (error instanceof BackendError && error.kind === "unavailable") {
+            // No decision commands have been sent yet.
+            return backendFailure(error, requestId, true);
+          }
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "failed",
+            message: "The action could not be checked, so no decision was sent.",
+          });
+          continue;
+        }
+
+        const tenantId = action?.targetRecord.tenantId;
+        if (
+          !action ||
+          tenantId === undefined ||
+          !principal.tenantIds.includes(tenantId)
+        ) {
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "forbidden",
+            message: "This action is unavailable to your account.",
+          });
+          continue;
+        }
+
+        const permission = `action:${item.decision}` as const;
+        if (!authorize(principal, permission, { tenantId }).allowed) {
+          await itemAudit(
+            item,
+            tenantId,
+            "decision.denied",
+            "rejected",
+            "Decision denied: the user lacks permission to decide actions.",
+            { decision: item.decision },
+          );
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "forbidden",
+            message: "You do not have permission to make this decision.",
+          });
+          continue;
+        }
+
+        const scope = `${principal.userId}|${item.idempotencyKey}`;
+        const fingerprint = JSON.stringify([
+          tenantId,
+          item.actionId,
+          item.decision,
+          item.recordVersion,
+          item.reason ?? "",
+        ]);
+        let recorded;
+        try {
+          recorded = await backend.findRecordedDecision(ctx, scope, fingerprint);
+        } catch (error) {
+          if (error instanceof BackendError && error.kind === "unavailable") {
+            // Preflight is complete before any write is issued.
+            return backendFailure(error, requestId, true);
+          }
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "failed",
+            message: "The previous decision could not be checked, so no decision was sent.",
+          });
+          continue;
+        }
+
+        if (recorded.kind === "key-reuse") {
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "failed",
+            message: "This idempotency key belongs to a different decision.",
+          });
+          continue;
+        }
+        if (recorded.kind === "replay") {
+          const expectedStatus = item.decision === "approve" ? "approved" : "rejected";
+          if (recorded.result.status !== expectedStatus) {
+            results.set(item.actionId, {
+              actionId: item.actionId,
+              decision: item.decision,
+              outcome: "outcome_unknown",
+              message: "The stored result could not be confirmed for this decision.",
+            });
+            await itemAudit(
+              item,
+              tenantId,
+              "decision.outcome_unknown",
+              "unknown",
+              "The decision outcome could not be confirmed; it may or may not have been recorded.",
+              { decision: item.decision, recordVersion: item.recordVersion },
+            );
+            continue;
+          }
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: item.decision === "approve" ? "approved" : "rejected",
+            status: expectedStatus,
+            recordVersion: recorded.result.recordVersion,
+            message: "This decision was already recorded; returning the original result.",
+          });
+          continue;
+        }
+
+        if (action.status !== "pending" || action.recordVersion !== item.recordVersion) {
+          const conflictCode =
+            action.status !== "pending" ? "invalid_transition" : "version_conflict";
+          await itemAudit(
+            item,
+            tenantId,
+            "decision.conflict",
+            "rejected",
+            action.status !== "pending"
+              ? "Decision rejected: the action cannot take this decision in its current state."
+              : "Decision rejected: the action changed after it was loaded.",
+            {
+              decision: item.decision,
+              recordVersion: item.recordVersion,
+              conflictCode,
+            },
+          );
+          results.set(item.actionId, {
+            actionId: item.actionId,
+            decision: item.decision,
+            outcome: "conflict",
+            message:
+              action.status !== "pending"
+                ? "The action is no longer pending."
+                : "The action changed after it was loaded.",
+          });
+          continue;
+        }
+
+        commands.push({ ...item, tenantId });
+      }
+
+      if (commands.length > 0) {
+        let outcomes;
+        try {
+          outcomes = await backend.bulkDecide(ctx, commands);
+        } catch (error) {
+          if (error instanceof BackendError && error.kind === "unavailable") {
+            // The bridge adapter's unavailable response guarantees that nothing was sent.
+            return backendFailure(error, requestId, true);
+          }
+          outcomes = commands.map((command) => ({
+            actionId: command.actionId,
+            decision: command.decision,
+            kind: "outcome_unknown" as const,
+          }));
+        }
+
+        const outcomesById = new Map(
+          outcomes.map((outcome) => [outcome.actionId, outcome]),
+        );
+        for (const command of commands) {
+          const item = parsed.data.decisions.find(
+            (candidate) => candidate.actionId === command.actionId,
+          )!;
+          const outcome = outcomesById.get(command.actionId);
+          const tenantId = command.tenantId;
+
+          if (!outcome || outcome.decision !== command.decision) {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "outcome_unknown",
+              message: "The backend did not confirm this decision.",
+            });
+            await itemAudit(
+              item,
+              tenantId,
+              "decision.outcome_unknown",
+              "unknown",
+              "The decision outcome could not be confirmed; it may or may not have been recorded.",
+              { decision: command.decision, recordVersion: command.recordVersion },
+            );
+            continue;
+          }
+
+          if (outcome.kind === "committed" || outcome.kind === "replayed") {
+            const checked = decisionResultSchema.safeParse(outcome.result);
+            const expectedStatus =
+              command.decision === "approve" ? "approved" : "rejected";
+            if (
+              !checked.success ||
+              checked.data.actionId !== command.actionId ||
+              checked.data.decision !== command.decision ||
+              checked.data.status !== expectedStatus
+            ) {
+              results.set(command.actionId, {
+                actionId: command.actionId,
+                decision: command.decision,
+                outcome: "outcome_unknown",
+                message: "The backend response could not confirm this decision.",
+              });
+              await itemAudit(
+                item,
+                tenantId,
+                "decision.outcome_unknown",
+                "unknown",
+                "The decision outcome could not be confirmed; it may or may not have been recorded.",
+                { decision: command.decision, recordVersion: command.recordVersion },
+              );
+              continue;
+            }
+
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: command.decision === "approve" ? "approved" : "rejected",
+              status: checked.data.status,
+              recordVersion: checked.data.recordVersion,
+              message:
+                command.decision === "approve"
+                  ? "Approval accepted. Execution has not been performed."
+                  : "Rejection accepted.",
+            });
+            if (outcome.kind !== "replayed") {
+              await itemAudit(
+                item,
+                tenantId,
+                "decision.accepted",
+                "success",
+                command.decision === "approve"
+                  ? "Approval accepted by the backend. Execution has not been performed."
+                  : "Rejection accepted by the backend.",
+                {
+                  decision: command.decision,
+                  recordVersion: command.recordVersion,
+                  reasonProvided: Boolean(command.reason?.trim()),
+                  resultingStatus: checked.data.status,
+                },
+              );
+            }
+            continue;
+          }
+
+          if (outcome.kind === "outcome_unknown") {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "outcome_unknown",
+              message: "The decision may or may not have been recorded. Recheck the queue before retrying.",
+            });
+            await itemAudit(
+              item,
+              tenantId,
+              "decision.outcome_unknown",
+              "unknown",
+              "The decision outcome could not be confirmed; it may or may not have been recorded.",
+              { decision: command.decision, recordVersion: command.recordVersion },
+            );
+            continue;
+          }
+
+          if (outcome.code === "forbidden") {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "forbidden",
+              message: "The backend denied this decision.",
+            });
+            await itemAudit(
+              item,
+              tenantId,
+              "decision.denied",
+              "rejected",
+              "Decision denied by the backend: the user is not permitted to decide this action.",
+              { decision: command.decision },
+            );
+          } else if (outcome.code === "version_conflict" || outcome.code === "invalid_transition") {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "conflict",
+              message: "The action changed before the decision could be recorded.",
+            });
+            await itemAudit(
+              item,
+              tenantId,
+              "decision.conflict",
+              "rejected",
+              "Decision rejected because the action changed before it could be recorded.",
+              {
+                decision: command.decision,
+                recordVersion: command.recordVersion,
+                conflictCode: outcome.code,
+              },
+            );
+          } else if (outcome.code === "idempotency_key_reuse") {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "failed",
+              message: "This idempotency key belongs to a different decision.",
+            });
+          } else {
+            results.set(command.actionId, {
+              actionId: command.actionId,
+              decision: command.decision,
+              outcome: "forbidden",
+              message: "This action is unavailable to your account.",
+            });
+          }
+        }
+      }
+
+      const response = bulkDecisionResultSchema.parse({
+        results: parsed.data.decisions.map((item) => results.get(item.actionId)),
+      });
+      return jsonResponse(response, requestId);
+    }

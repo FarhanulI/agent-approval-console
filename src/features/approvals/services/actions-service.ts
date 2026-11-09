@@ -7,6 +7,10 @@ import {
   pendingActionSchema,
 } from "../contracts";
 import {
+  bulkDecisionRequestSchema,
+  bulkDecisionResultSchema,
+} from "../schemas/bulk-decision";
+import {
   browserDecisionRequestSchema,
   isProposedConflictCode,
 } from "../schemas/decision-request";
@@ -258,6 +262,77 @@ export function createHttpActionsService(
         throw new ActionsServiceError(
           "unknown-outcome",
           "The server answered, but the response could not be confirmed as the result of this decision.",
+        );
+      }
+      return parsed.data;
+    },
+
+    /**
+     * `POST /api/actions/bulk-decision` is a proposed mock-backed BFF
+     * contract. Every item has its own idempotency key and result. The request
+     * is never retried; a transport/5xx/malformed response leaves each item
+     * with an unknown outcome until the caller reconciles it.
+     */
+    async bulkDecision(input) {
+      if (!decisionsEnabled) {
+        throw new ActionsServiceError(
+          "unavailable",
+          "Decisions are unavailable: no trusted identity and authorization boundary is configured for this environment.",
+        );
+      }
+
+      const body = bulkDecisionRequestSchema.parse(input);
+      let response: Response;
+      try {
+        response = await fetchFn(`${baseUrl}/api/actions/bulk-decision`, {
+          method: "POST",
+          signal: AbortSignal.timeout(decisionTimeoutMs),
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        throw new ActionsServiceError(
+          "unknown-outcome",
+          "The connection failed or timed out. The bulk decisions may or may not have been recorded.",
+        );
+      }
+
+      if (!response.ok) {
+        const apiError = await readApiError(response);
+        const details = httpDetails(response, apiError);
+        const message =
+          apiError?.message ?? `The server responded with status ${response.status}.`;
+        if (response.status === 503 && apiError?.code === "decisions_unavailable") {
+          throw new ActionsServiceError("unavailable", message, details);
+        }
+        if (response.status >= 500) {
+          throw new ActionsServiceError(
+            "unknown-outcome",
+            "The server reported an error. The bulk decisions may or may not have been recorded.",
+            details,
+          );
+        }
+        throw new ActionsServiceError("http", message, details);
+      }
+
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = bulkDecisionResultSchema.safeParse(payload);
+      const expected = new Map(
+        body.decisions.map((item) => [item.actionId, item.decision]),
+      );
+      if (
+        !parsed.success ||
+        parsed.data.results.length !== body.decisions.length ||
+        parsed.data.results.some(
+          (item) => expected.get(item.actionId) !== item.decision,
+        )
+      ) {
+        throw new ActionsServiceError(
+          "unknown-outcome",
+          "The server answered, but the bulk decision results could not be confirmed.",
         );
       }
       return parsed.data;

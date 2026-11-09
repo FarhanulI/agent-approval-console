@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMockDecisionLog, listMockActions, resetMockActionState } from "@/mocks/action-store";
+import {
+  getRecordedMockAuditEvents,
+  resetMockAuditState,
+} from "@/mocks/audit-store";
 import { resetAllScenarios, setDecisionScenario } from "@/mocks/scenarios";
 import {
   REVIEWER_BOTH,
@@ -10,7 +14,13 @@ import {
   type TestClaims,
 } from "@/test/auth-helpers";
 import { createBridgeBackend } from "./bridge-backend";
-import { handleDecision, handleGetAction, handleListActions } from "./handlers";
+import {
+  handleBulkDecision,
+  handleDecision,
+  handleGetAction,
+  handleListActions,
+} from "./handlers";
+import { resetRateLimits } from "@/lib/server/rate-limit";
 
 const ORIGIN = "http://localhost:3000";
 const KEY = "idem-key-0123456789abcdef";
@@ -42,6 +52,35 @@ async function decisionRequest(actionId: string, opts: DecisionOptions = {}) {
   });
 }
 
+function bulkItem(
+  action: ReturnType<typeof pendingIn>,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    actionId: action.id,
+    decision: "approve",
+    recordVersion: action.recordVersion,
+    idempotencyKey: `bulk-key-${action.id}-00000000`,
+    ...overrides,
+  };
+}
+
+async function bulkRequest(
+  decisions: unknown[],
+  claims: TestClaims | null = REVIEWER_BOTH,
+) {
+  const headers: Record<string, string> = {
+    origin: ORIGIN,
+    "content-type": "application/json",
+  };
+  if (claims) headers.cookie = await sessionCookie(claims);
+  return new Request(`${ORIGIN}/api/actions/bulk-decision`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ decisions }),
+  });
+}
+
 async function get(path: string, claims: TestClaims | null = REVIEWER_BOTH, cookie?: string) {
   const headers: Record<string, string> = {};
   if (cookie) headers.cookie = cookie;
@@ -52,12 +91,16 @@ async function get(path: string, claims: TestClaims | null = REVIEWER_BOTH, cook
 beforeEach(() => {
   setTestEnv(vi);
   resetMockActionState();
+  resetMockAuditState();
   resetAllScenarios();
+  resetRateLimits();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
   resetMockActionState();
+  resetMockAuditState();
   resetAllScenarios();
+  resetRateLimits();
 });
 
 async function errorCode(response: Response) {
@@ -262,9 +305,44 @@ describe("DECISION-BOUNDARY-001 server-side validation", () => {
     expect(getMockDecisionLog()).toHaveLength(0);
   });
 
+  it("rejects oversized decision bodies before JSON validation", async () => {
+    const action = pendingIn("tenant_main");
+    const response = await handleDecision(
+      await decisionRequest(action.id, { rawBody: "x".repeat(8 * 1024 + 1) }),
+      action.id,
+      "approve",
+    );
+    expect(response.status).toBe(413);
+    expect(await errorCode(response)).toBe("payload_too_large");
+    expect(getMockDecisionLog()).toHaveLength(0);
+  });
+
   it("answers 404 for a missing action", async () => {
     const response = await handleDecision(await decisionRequest("act_9999"), "act_9999", "approve");
     expect(response.status).toBe(404);
+  });
+});
+
+describe("SECURITY-003 per-user decision rate limit", () => {
+  it("limits authenticated decision attempts and returns Retry-After", async () => {
+    const action = pendingIn("tenant_main");
+    const cookie = await sessionCookie(REVIEWER_BOTH);
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 31; attempt += 1) {
+      response = await handleDecision(
+        await decisionRequest(action.id, {
+          cookie,
+          body: { decision: "approve", recordVersion: -1 },
+        }),
+        action.id,
+        "approve",
+      );
+    }
+
+    expect(response?.status).toBe(429);
+    expect(response?.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(await errorCode(response!)).toBe("rate_limited");
+    expect(getMockDecisionLog()).toHaveLength(0);
   });
 });
 
@@ -341,5 +419,275 @@ describe("real decision adapter stays unavailable (no silent mock fallback)", ()
     expect((await handleDecision(await decisionRequest(a.id), a.id, "approve")).status).toBe(503);
     vi.stubEnv("ALLOW_MOCK_BACKEND_IN_PRODUCTION", "true");
     expect((await handleListActions(await get("/api/actions"))).status).toBe(200);
+  });
+});
+
+describe("BULK-DECISION-001 per-item mock workflow", () => {
+  it("returns independent results for a successful item and a version conflict", async () => {
+    const approved = pendingIn("tenant_main");
+    const stale = listMockActions().find(
+      (action) =>
+        action.status === "pending" &&
+        action.targetRecord.tenantId === "tenant_east" &&
+        action.id !== approved.id,
+    )!;
+    const response = await handleBulkDecision(
+      await bulkRequest([
+        bulkItem(approved),
+        bulkItem(stale, { recordVersion: stale.recordVersion + 1 }),
+      ]),
+    );
+    const body = (await response.json()) as {
+      results: Array<{ actionId: string; outcome: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.results).toEqual([
+      { actionId: approved.id, decision: "approve", outcome: "approved", status: "approved", recordVersion: approved.recordVersion + 1, message: "Approval accepted. Execution has not been performed." },
+      { actionId: stale.id, decision: "approve", outcome: "conflict", message: "The action changed after it was loaded." },
+    ]);
+    expect(getMockDecisionLog()).toHaveLength(1);
+    expect(
+      getRecordedMockAuditEvents()
+        .map((event) => event.eventType)
+        .sort(),
+    ).toEqual(["decision.accepted", "decision.conflict"]);
+  });
+
+  it("supports bulk rejection without equating it with execution", async () => {
+    const action = pendingIn("tenant_main");
+    const response = await handleBulkDecision(
+      await bulkRequest([bulkItem(action, { decision: "reject" })]),
+    );
+    const body = (await response.json()) as {
+      results: Array<{ outcome: string; status: string }>;
+    };
+
+    expect(body.results).toEqual([
+      expect.objectContaining({ outcome: "rejected", status: "rejected" }),
+    ]);
+    expect(getMockDecisionLog()).toMatchObject([
+      { decision: "reject", actorId: REVIEWER_BOTH.sub },
+    ]);
+    expect(getRecordedMockAuditEvents()).toMatchObject([
+      { eventType: "decision.accepted", details: { decision: "reject" } },
+    ]);
+  });
+
+  it("returns a non-disclosing forbidden result for cross-tenant actions", async () => {
+    const east = pendingIn("tenant_east");
+    const response = await handleBulkDecision(
+      await bulkRequest([bulkItem(east)], REVIEWER_MAIN),
+    );
+    const body = (await response.json()) as {
+      results: Array<{ outcome: string; message: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.results).toEqual([
+      {
+        actionId: east.id,
+        decision: "approve",
+        outcome: "forbidden",
+        message: "This action is unavailable to your account.",
+      },
+    ]);
+    expect(getMockDecisionLog()).toHaveLength(0);
+    expect(getRecordedMockAuditEvents()).toHaveLength(0);
+  });
+
+  it("returns forbidden and records a denial for a reviewer without decision permission", async () => {
+    const action = pendingIn("tenant_main");
+    const response = await handleBulkDecision(
+      await bulkRequest([bulkItem(action)], VIEWER_BOTH),
+    );
+    const body = (await response.json()) as {
+      results: Array<{ outcome: string }>;
+    };
+
+    expect(body.results[0].outcome).toBe("forbidden");
+    expect(getMockDecisionLog()).toHaveLength(0);
+    expect(getRecordedMockAuditEvents()).toMatchObject([
+      {
+        eventType: "decision.denied",
+        actorId: VIEWER_BOTH.sub,
+        actionId: action.id,
+      },
+    ]);
+  });
+
+  it("rejects malformed, actor-bearing, duplicate-action and shared-key requests", async () => {
+    const first = pendingIn("tenant_main");
+    const second = listMockActions().find(
+      (action) =>
+        action.status === "pending" &&
+        action.targetRecord.tenantId === "tenant_main" &&
+        action.id !== first.id,
+    )!;
+    const bodies = [
+      { decisions: [bulkItem(first, { actorId: "untrusted" })] },
+      { decisions: [bulkItem(first), bulkItem(first, { idempotencyKey: "bulk-key-second-00000000" })] },
+      { decisions: [bulkItem(first), bulkItem(second, { idempotencyKey: bulkItem(first).idempotencyKey })] },
+    ];
+
+    for (const body of bodies) {
+      const request = await bulkRequest(body.decisions);
+      const invalid = new Request(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: JSON.stringify(body),
+      });
+      expect((await handleBulkDecision(invalid)).status).toBe(400);
+    }
+    expect(getMockDecisionLog()).toHaveLength(0);
+  });
+
+  it("uses a stable item key for idempotent replay without duplicate audit entries", async () => {
+    const action = pendingIn("tenant_main");
+    const request = await bulkRequest([bulkItem(action)]);
+    const first = await handleBulkDecision(request);
+    const replay = await handleBulkDecision(
+      await bulkRequest([bulkItem(action)]),
+    );
+    const firstBody = (await first.json()) as { results: Array<{ outcome: string }> };
+    const replayBody = (await replay.json()) as { results: Array<{ outcome: string }> };
+
+    expect(firstBody.results[0].outcome).toBe("approved");
+    expect(replayBody.results[0].outcome).toBe("approved");
+    expect(getMockDecisionLog()).toHaveLength(1);
+    expect(getRecordedMockAuditEvents()).toHaveLength(1);
+  });
+
+  it("deduplicates concurrent items with the same logical key", async () => {
+    const action = pendingIn("tenant_main");
+    const item = bulkItem(action);
+    const [first, second] = await Promise.all([
+      bulkRequest([item]),
+      bulkRequest([item]),
+    ]);
+    const responses = await Promise.all([
+      handleBulkDecision(first),
+      handleBulkDecision(second),
+    ]);
+    const bodies = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{
+            results: Array<{ outcome: string }>;
+          }>,
+      ),
+    );
+
+    expect(bodies.map((body) => body.results[0].outcome)).toEqual([
+      "approved",
+      "approved",
+    ]);
+    expect(getMockDecisionLog()).toHaveLength(1);
+    expect(getRecordedMockAuditEvents()).toHaveLength(1);
+  });
+
+  it("reports idempotency key reuse as a definite per-item failure", async () => {
+    const action = pendingIn("tenant_main");
+    const first = await handleDecision(
+      await decisionRequest(action.id, {
+        key: KEY,
+        body: {
+          decision: "approve",
+          recordVersion: action.recordVersion,
+          reason: "first request",
+        },
+      }),
+      action.id,
+      "approve",
+    );
+    expect(first.status).toBe(200);
+
+    const bulk = await handleBulkDecision(
+      await bulkRequest([
+        bulkItem(action, {
+          idempotencyKey: KEY,
+          reason: "different logical decision",
+        }),
+      ]),
+    );
+    const body = (await bulk.json()) as {
+      results: Array<{ outcome: string; message: string }>;
+    };
+
+    expect(body.results[0]).toEqual({
+      actionId: action.id,
+      decision: "approve",
+      outcome: "failed",
+      message: "This idempotency key belongs to a different decision.",
+    });
+    expect(getMockDecisionLog()).toHaveLength(1);
+    expect(getRecordedMockAuditEvents()).toHaveLength(1);
+  });
+
+  it("does not allow one key to identify a different action", async () => {
+    const first = pendingIn("tenant_main");
+    const second = listMockActions().find(
+      (action) =>
+        action.status === "pending" &&
+        action.targetRecord.tenantId === "tenant_main" &&
+        action.id !== first.id,
+    )!;
+    const firstResponse = await handleDecision(
+      await decisionRequest(first.id, {
+        key: KEY,
+        body: { decision: "approve", recordVersion: first.recordVersion },
+      }),
+      first.id,
+      "approve",
+    );
+    expect(firstResponse.status).toBe(200);
+
+    const response = await handleBulkDecision(
+      await bulkRequest([
+        bulkItem(second, { idempotencyKey: KEY }),
+      ]),
+    );
+    const body = (await response.json()) as {
+      results: Array<{ outcome: string }>;
+    };
+
+    expect(body.results[0].outcome).toBe("failed");
+    expect(getMockDecisionLog()).toHaveLength(1);
+  });
+
+  it("reports unknown after a lost response and permits only explicit same-key replay", async () => {
+    const action = pendingIn("tenant_main");
+    const item = bulkItem(action);
+    setDecisionScenario({ kind: "lost-response" });
+    const first = await handleBulkDecision(await bulkRequest([item]));
+    const firstBody = (await first.json()) as {
+      results: Array<{ outcome: string }>;
+    };
+    expect(firstBody.results[0].outcome).toBe("outcome_unknown");
+    expect(getMockDecisionLog()).toHaveLength(1);
+
+    setDecisionScenario({ kind: "ok" });
+    const replay = await handleBulkDecision(await bulkRequest([item]));
+    const replayBody = (await replay.json()) as {
+      results: Array<{ outcome: string }>;
+    };
+    expect(replayBody.results[0].outcome).toBe("approved");
+    expect(getMockDecisionLog()).toHaveLength(1);
+    expect(getRecordedMockAuditEvents().map((event) => event.eventType)).toEqual([
+      "decision.outcome_unknown",
+    ]);
+  });
+
+  it("fails closed when the bridge backend is unavailable", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_MOCKING", "");
+    const action = pendingIn("tenant_main");
+    const response = await handleBulkDecision(
+      await bulkRequest([bulkItem(action)]),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await errorCode(response)).toBe("decisions_unavailable");
+    expect(getMockDecisionLog()).toHaveLength(0);
+    expect(getRecordedMockAuditEvents()).toHaveLength(0);
   });
 });

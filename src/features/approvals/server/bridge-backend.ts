@@ -22,5 +22,6 @@ export function createBridgeBackend(): ActionsBackend {
     getAction: unavailable,
     findRecordedDecision: unavailable,
     decide: unavailable,
+    bulkDecide: unavailable,
   };
 }

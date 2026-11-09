@@ -15,7 +15,12 @@ import { unauthenticated, getRequestId } from "@/lib/server/http";
  */
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  if (pathname === "/login" || pathname.startsWith("/api/auth/")) {
+  if (
+    pathname === "/login" ||
+    pathname.startsWith("/api/auth/") ||
+    pathname === "/api/health/live" ||
+    pathname === "/api/health/ready"
+  ) {
     return NextResponse.next();
   }
 
