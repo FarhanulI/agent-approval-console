@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { StrictMode } from "react";
 import {
   cleanup,
   fireEvent,
@@ -12,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { handlers } from "@/mocks/handlers";
+import { actionFixtures } from "@/mocks/fixtures/actions";
 import {
   resetActionsScenario,
   setActionsScenario,
@@ -89,15 +91,22 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-function renderQueue(queueService: ActionsService = service) {
+function renderQueue(
+  queueService: ActionsService = service,
+  strictMode = false,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { gcTime: 0 } },
   });
-  return render(
+  const queue = (
     <QueryClientProvider client={client}>
       <PendingActionsQueue service={queueService} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const rendered = render(
+    strictMode ? <StrictMode>{queue}</StrictMode> : queue,
+  );
+  return { ...rendered, queryClient: client };
 }
 
 function decisionService(
@@ -116,6 +125,173 @@ describe("PendingActionsQueue", () => {
 
     await waitFor(() => expect(dataRows()).toHaveLength(10));
     expect(screen.getByText("Page 1 of 5 · 47 actions")).toBeTruthy();
+  });
+
+  it("moves focus with J/K and opens the focused action with Enter", async () => {
+    renderQueue();
+    await waitFor(() => expect(dataRows()).toHaveLength(10));
+
+    const region = screen.getByRole("region", { name: "Pending actions table" });
+    const links = within(screen.getByRole("table")).getAllByRole("link");
+    const clickFirst = vi.spyOn(links[0], "click").mockImplementation(() => {});
+    region.focus();
+
+    fireEvent.keyDown(region, { key: "j" });
+    expect(document.activeElement).toBe(links[0]);
+    fireEvent.keyDown(links[0], { key: "j" });
+    expect(document.activeElement).toBe(links[1]);
+    fireEvent.keyDown(links[1], { key: "k" });
+    expect(document.activeElement).toBe(links[0]);
+
+    fireEvent.keyDown(links[0], { key: "Enter" });
+    expect(clickFirst).toHaveBeenCalledOnce();
+    expect(clickFirst.mock.calls).toHaveLength(1);
+  });
+
+  it("toggles the focused pending action with Space and selects eligible rows with Ctrl+A", async () => {
+    renderQueue();
+    await waitFor(() => expect(dataRows()).toHaveLength(10));
+
+    const table = screen.getByRole("table");
+    const region = screen.getByRole("region", { name: "Pending actions table" });
+    const boxes = within(table).getAllByRole("checkbox", {
+      name: /^Select action:/,
+    }) as HTMLInputElement[];
+    const firstEligibleIndex = boxes.findIndex((box) => !box.disabled);
+    const link = within(boxes[firstEligibleIndex].closest("tr")!).getByRole("link");
+
+    link.focus();
+    expect(fireEvent.keyDown(link, { key: " " })).toBe(false);
+    expect(boxes[firstEligibleIndex].checked).toBe(true);
+    expect(screen.getByText("1 action selected on this page")).toBeTruthy();
+
+    region.focus();
+    fireEvent.keyDown(region, { key: "a", ctrlKey: true });
+    expect(
+      screen.getByText(`${boxes.length} actions selected on this page`),
+    ).toBeTruthy();
+
+    fireEvent.keyDown(region, { key: "Escape" });
+    expect(screen.queryByText(/selected on this page/)).toBeNull();
+  });
+
+  it("clears selection after refreshed data and prevents old IDs from returning", async () => {
+    const action = actionFixtures.find((item) => item.status === "pending")!;
+    let status = action.status;
+    const refreshService: ActionsService = {
+      ...service,
+      listActions: async (query) => ({
+        items: [{ ...action, status }],
+        pagination: {
+          page: query.page ?? 1,
+          pageSize: query.pageSize ?? 10,
+          total: 1,
+        },
+      }),
+    };
+    const { queryClient } = renderQueue(refreshService);
+    await waitFor(() => expect(dataRows()).toHaveLength(1));
+
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: `Select action: ${action.title} for ${action.targetRecord.label}`,
+      }),
+    );
+    expect(screen.getByText("1 action selected on this page")).toBeTruthy();
+
+    status = "approved";
+    await queryClient.invalidateQueries();
+    await waitFor(() => {
+      const checkbox = screen.getByRole("checkbox", {
+        name: new RegExp(`Action not selectable \\(approved\\)`),
+      });
+      expect((checkbox as HTMLInputElement).disabled).toBe(true);
+    });
+    expect(screen.queryByText(/selected on this page/)).toBeNull();
+
+    status = "pending";
+    await queryClient.invalidateQueries();
+    await waitFor(() => expect(dataRows()).toHaveLength(1));
+    expect(screen.queryByText(/selected on this page/)).toBeNull();
+  });
+
+  it("does not submit a confirmation after the queue data snapshot changes", async () => {
+    const action = actionFixtures.find((item) => item.status === "pending")!;
+    let recordVersion = action.recordVersion;
+    const bulkDecision = vi.fn(async () => ({ results: [] }));
+    const queueService: ActionsService = {
+      ...decisionService(bulkDecision),
+      listActions: async (query) => ({
+        items: [{ ...action, recordVersion }],
+        pagination: {
+          page: query.page ?? 1,
+          pageSize: query.pageSize ?? 10,
+          total: 1,
+        },
+      }),
+    };
+    const { queryClient } = renderQueue(queueService);
+    await waitFor(() => expect(dataRows()).toHaveLength(1));
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: `Select action: ${action.title} for ${action.targetRecord.label}`,
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Approve selected" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    recordVersion += 1;
+    await queryClient.invalidateQueries();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(bulkDecision).not.toHaveBeenCalled();
+  });
+
+  it("opens and closes shortcut help, including the question-mark shortcut", async () => {
+    const user = userEvent.setup();
+    renderQueue();
+    await waitFor(() => expect(dataRows()).toHaveLength(10));
+
+    const region = screen.getByRole("region", { name: "Pending actions table" });
+    region.focus();
+    fireEvent.keyDown(region, { key: "?" });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Focus the next action on this page")).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Close dialog" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: /Keyboard shortcuts/ }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("ignores queue shortcuts in search inputs and detaches its key listener on unmount", async () => {
+    const addListener = vi.spyOn(document, "addEventListener");
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    const { unmount } = renderQueue(service, true);
+    await waitFor(() => expect(dataRows()).toHaveLength(10));
+
+    const search = screen.getByLabelText("Search actions");
+    search.focus();
+    fireEvent.keyDown(search, { key: "j" });
+    fireEvent.keyDown(search, { key: "a", ctrlKey: true });
+    expect(document.activeElement).toBe(search);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/selected on this page/)).toBeNull();
+
+    const registered = addListener.mock.calls
+      .filter(([type]) => type === "keydown")
+      .map(([, listener]) => listener);
+    const activeBeforeUnmount =
+      registered.length -
+      removeListener.mock.calls.filter(([type]) => type === "keydown").length;
+    expect(registered.length).toBeGreaterThan(0);
+    expect(activeBeforeUnmount).toBe(1);
+    unmount();
+    for (const listener of registered) {
+      expect(removeListener).toHaveBeenCalledWith("keydown", listener);
+    }
+    addListener.mockRestore();
+    removeListener.mockRestore();
   });
 
   it("moves between pages through the URL and clears the selection", async () => {
@@ -143,6 +319,15 @@ describe("PendingActionsQueue", () => {
     await waitFor(() => expect(screen.getByText("Updating results…")).toBeTruthy());
     // Old rows are still visible, but nothing can act on them.
     expect(dataRows()).toHaveLength(10);
+    const tableRegion = screen.getByRole("region", {
+      name: "Pending actions table",
+    });
+    tableRegion.focus();
+    fireEvent.keyDown(tableRegion, { key: "j" });
+    expect(document.activeElement).toBe(tableRegion);
+    const staleLink = screen.getAllByRole("link")[0];
+    staleLink.focus();
+    expect(fireEvent.keyDown(staleLink, { key: "Enter" })).toBe(false);
     expect(
       (screen.getByRole("button", { name: "Next page" }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -274,6 +459,11 @@ describe("PendingActionsQueue", () => {
     const approveButton = screen.getByRole("button", {
       name: "Approve selected",
     });
+    const sortButton = screen.getByRole("button", { name: /risk/i });
+    sortButton.focus();
+    fireEvent.keyDown(sortButton, { key: "a" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
     approveButton.focus();
     await user.keyboard("a");
     const heading = await screen.findByRole("heading", {

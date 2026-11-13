@@ -54,6 +54,8 @@ function SelectCheckbox({
     <input
       type="checkbox"
       aria-label={label}
+      data-queue-select
+      aria-keyshortcuts="Space"
       className="size-4 accent-accent disabled:opacity-40"
       checked={checked}
       disabled={disabled}
@@ -111,6 +113,9 @@ const columns = columnHelper.columns([
         <div className="min-w-56 space-y-1">
           <Link
             href={`/approvals/${encodeURIComponent(action.id)}`}
+            data-queue-action-link
+            data-action-id={action.id}
+            aria-keyshortcuts="Enter"
             className="font-medium text-accent underline-offset-2 hover:underline"
           >
             {action.title}
@@ -308,6 +313,7 @@ export function QueueTable({
             {table.getRowModel().rows.map((row) => (
               <tr
                 key={row.id}
+                data-queue-action-id={row.original.id}
                 className={cn(row.getIsSelected() && "bg-accent-soft")}
               >
                 {row.getAllCells().map((cell) => (

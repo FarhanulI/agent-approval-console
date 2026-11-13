@@ -1,7 +1,7 @@
 "use client";
 
 import type { RowSelectionState } from "@tanstack/react-table";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -16,24 +16,33 @@ import type { BulkDecisionOutcome } from "../schemas/bulk-decision";
 import type { ActionsService } from "../types";
 import { serializeActionListQuery } from "../utils/action-list-query";
 import { isSelectable } from "../utils/presentation";
-import { getQueueDecisionShortcut } from "../utils/queue-shortcuts";
+import {
+  getQueueKeyboardShortcut,
+  isQueueKeyboardTarget,
+} from "../utils/queue-shortcuts";
 import {
   clearFilters,
   hasActiveFilters,
   lastPage,
   toActionListQuery,
 } from "../utils/queue-state";
-import type { PendingAction } from "../contracts";
+import type { ActionListResponse, PendingAction } from "../contracts";
 import { QueueTable } from "./queue-table";
+import { QueueShortcutHelp } from "./queue-shortcut-help";
 import { QueueToolbar } from "./queue-toolbar";
 import { SelectionBar } from "./selection-bar";
 
 const NO_SELECTION: RowSelectionState = {};
 
-type SelectionScope = { queryId: string; ids: RowSelectionState };
+type SelectionScope = {
+  queryId: string;
+  dataSnapshot: ActionListResponse | undefined;
+  ids: RowSelectionState;
+};
 type BulkConfirmation = {
   decision: "approve" | "reject";
   actions: readonly PendingAction[];
+  dataSnapshot: ActionListResponse;
 };
 type BulkFeedback = {
   decision: "approve" | "reject";
@@ -58,20 +67,33 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
   const bulkDecision = useBulkDecisionMutation(service);
   const decisionsEnabled = (service ?? actionsService).decisionsEnabled;
   const { data, isPlaceholderData: stale } = result;
+  const rowsAvailable = Boolean(
+    data && !stale && !result.isFetching && !result.isRefetchError,
+  );
   const filtersActive = hasActiveFilters(state);
   const [confirmation, setConfirmation] = useState<BulkConfirmation | null>(null);
   const [feedback, setFeedback] = useState<BulkFeedback | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const queueRootRef = useRef<HTMLDivElement>(null);
+  const focusedActionIdRef = useRef<string | null>(null);
 
-  // Selection belongs to the query it was made under. Changing search, filters,
-  // sort or page makes it inapplicable, so it can never leak to other records.
+  // Selection belongs to both its query and exact data snapshot.
   const [selection, setSelection] = useState<SelectionScope>({
     queryId,
+    dataSnapshot: data,
     ids: NO_SELECTION,
   });
 
   const rowSelection = useMemo(() => {
-    if (!data || stale || selection.queryId !== queryId) return NO_SELECTION;
+    if (
+      !data ||
+      !rowsAvailable ||
+      selection.queryId !== queryId ||
+      selection.dataSnapshot !== data
+    ) {
+      return NO_SELECTION;
+    }
     const selectable = new Set(
       data.items.filter((a) => isSelectable(a.status)).map((a) => a.id),
     );
@@ -80,42 +102,198 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
       if (selected && selectable.has(id)) ids[id] = true;
     }
     return ids;
-  }, [data, stale, selection, queryId]);
+  }, [data, rowsAvailable, selection, queryId]);
+
   const selectedCount = Object.keys(rowSelection).length;
   const selectedActions = useMemo(
     () => data?.items.filter((action) => rowSelection[action.id]) ?? [],
     [data, rowSelection],
   );
+  const activeConfirmation =
+    confirmation &&
+    confirmation.dataSnapshot === data &&
+    rowsAvailable
+      ? confirmation
+      : null;
 
   const openConfirmation = useCallback(
     (decision: "approve" | "reject") => {
       if (
         !decisionsEnabled ||
         bulkDecision.isPending ||
+        !rowsAvailable ||
+        !data ||
         selectedActions.length === 0
       ) {
         return;
       }
       setBulkError(null);
       setFeedback(null);
-      setConfirmation({ decision, actions: selectedActions });
+      setConfirmation({ decision, actions: selectedActions, dataSnapshot: data });
     },
-    [decisionsEnabled, bulkDecision.isPending, selectedActions],
+    [decisionsEnabled, bulkDecision.isPending, selectedActions, data, rowsAvailable],
   );
 
   useEffect(() => {
+    focusedActionIdRef.current = null;
+  }, [queryId]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        !decisionsEnabled ||
-        bulkDecision.isPending ||
-        selectedActions.length === 0
-      ) {
+      const root = queueRootRef.current;
+      if (!root || !isQueueKeyboardTarget(event.target, root, event.key)) return;
+
+      const shortcut = getQueueKeyboardShortcut(
+        event,
+        activeConfirmation !== null || shortcutHelpOpen,
+      );
+      if (!shortcut) return;
+
+      const target = event.target instanceof Element ? event.target : null;
+      const tableRegion = target?.closest<HTMLElement>(
+        '[aria-label="Pending actions table"]',
+      );
+      const selectedActionsRegion = target?.closest<HTMLElement>(
+        '[aria-label="Selected actions"]',
+      );
+      const activeRow = target?.closest<HTMLElement>("[data-queue-action-id]");
+      const currentActionId =
+        activeRow?.dataset.queueActionId ?? focusedActionIdRef.current;
+      const links = Array.from(
+        root.querySelectorAll<HTMLAnchorElement>("a[data-queue-action-link]"),
+      );
+      const eligibleActions = (data?.items ?? []).filter((action) =>
+        isSelectable(action.status),
+      );
+      const findLink = (actionId: string | undefined) =>
+        actionId
+          ? links.find((link) => link.dataset.actionId === actionId)
+          : undefined;
+
+      if (shortcut === "help") {
+        event.preventDefault();
+        setShortcutHelpOpen(true);
         return;
       }
-      const decision = getQueueDecisionShortcut(event, confirmation !== null);
-      if (!decision) return;
-      event.preventDefault();
-      openConfirmation(decision);
+
+      if (shortcut === "approve" || shortcut === "reject") {
+        if (
+          !decisionsEnabled ||
+          bulkDecision.isPending ||
+          selectedActions.length === 0
+        ) {
+          return;
+        }
+        if (
+          !tableRegion &&
+          !selectedActionsRegion &&
+          !target?.closest("[data-queue-action-link], [data-queue-select]")
+        ) {
+          return;
+        }
+        event.preventDefault();
+        openConfirmation(shortcut);
+        return;
+      }
+
+      if (shortcut === "clear") {
+        if (Object.values(selection.ids).some(Boolean)) {
+          event.preventDefault();
+          setSelection({
+            queryId,
+            dataSnapshot: data,
+            ids: NO_SELECTION,
+          });
+        }
+        return;
+      }
+
+      if (!data || !rowsAvailable) {
+        if (
+          shortcut === "open" &&
+          target?.closest("a[data-queue-action-link]")
+        ) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (shortcut === "next" || shortcut === "previous") {
+        const currentIndex = links.findIndex(
+          (link) => link.dataset.actionId === currentActionId,
+        );
+        const nextIndex =
+          currentIndex < 0
+            ? shortcut === "next"
+              ? 0
+              : links.length - 1
+            : currentIndex + (shortcut === "next" ? 1 : -1);
+        const nextLink = links[nextIndex];
+        if (!nextLink) return;
+        event.preventDefault();
+        focusedActionIdRef.current = nextLink.dataset.actionId ?? null;
+        nextLink.focus();
+        return;
+      }
+
+      if (shortcut === "open") {
+        if (
+          target?.closest("[data-queue-select]") &&
+          !target.closest("[data-queue-action-id]")
+        ) {
+          return;
+        }
+        const actionLink = target?.closest<HTMLAnchorElement>(
+          "a[data-queue-action-link]",
+        );
+        if (!tableRegion && !target?.closest("[data-queue-select]") && !actionLink) {
+          return;
+        }
+        const actionId =
+          currentActionId ??
+          selectedActions[0]?.id ??
+          data.items[0]?.id;
+        const link = actionLink ?? findLink(actionId);
+        if (!link) return;
+        event.preventDefault();
+        focusedActionIdRef.current = link.dataset.actionId ?? actionId ?? null;
+        link.click();
+        return;
+      }
+
+      if (shortcut === "toggle") {
+        if (target?.closest("[data-queue-select]")) return;
+        if (
+          !tableRegion &&
+          !target?.closest("a[data-queue-action-link]")
+        ) {
+          return;
+        }
+        const actionId =
+          currentActionId ??
+          selectedActions[0]?.id ??
+          eligibleActions[0]?.id;
+        const rowCheckbox = actionId
+          ? Array.from(
+              root.querySelectorAll<HTMLElement>("[data-queue-action-id]"),
+            )
+              .find((row) => row.dataset.queueActionId === actionId)
+              ?.querySelector<HTMLInputElement>("[data-queue-select]")
+          : null;
+        if (!rowCheckbox || rowCheckbox.disabled) return;
+        event.preventDefault();
+        focusedActionIdRef.current = actionId ?? null;
+        rowCheckbox.click();
+        return;
+      }
+
+      if (shortcut === "selectAll") {
+        if (!tableRegion) return;
+        event.preventDefault();
+        const ids: RowSelectionState = {};
+        for (const action of eligibleActions) ids[action.id] = true;
+        setSelection({ queryId, dataSnapshot: data, ids });
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
@@ -123,16 +301,32 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
     decisionsEnabled,
     bulkDecision.isPending,
     selectedActions,
-    confirmation,
+    selection.ids,
+    activeConfirmation,
+    shortcutHelpOpen,
     openConfirmation,
+    data,
+    rowsAvailable,
+    queryId,
   ]);
 
   const submitBulkDecision = async () => {
-    if (!confirmation || bulkDecision.isPending) return;
-    const { decision, actions } = confirmation;
+    if (
+      !activeConfirmation ||
+      activeConfirmation.dataSnapshot !== data ||
+      stale ||
+      bulkDecision.isPending
+    ) {
+      return;
+    }
+    const { decision, actions } = activeConfirmation;
     const titles = new Map(actions.map((action) => [action.id, action.title]));
     setConfirmation(null);
-    setSelection({ queryId, ids: NO_SELECTION });
+    setSelection({
+      queryId,
+      dataSnapshot: data,
+      ids: NO_SELECTION,
+    });
     setBulkError(null);
     try {
       const response = await bulkDecision.mutateAsync({
@@ -256,28 +450,50 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
           pending={bulkDecision.isPending}
           onApprove={() => openConfirmation("approve")}
           onReject={() => openConfirmation("reject")}
-          onClear={() => setSelection({ queryId, ids: NO_SELECTION })}
+          onClear={() =>
+            setSelection({
+              queryId,
+              dataSnapshot: data,
+              ids: NO_SELECTION,
+            })
+          }
         />
         <QueueTable
           actions={data.items}
           sort={state.sort}
           onSortChange={(sort) => update({ sort })}
           rowSelection={rowSelection}
-          onRowSelectionChange={(ids) => setSelection({ queryId, ids })}
-          selectionDisabled={stale}
+          onRowSelectionChange={(ids) =>
+            setSelection({
+              queryId,
+              dataSnapshot: data,
+              ids,
+            })
+          }
+          selectionDisabled={!rowsAvailable}
           page={data.pagination.page}
           pageSize={data.pagination.pageSize}
           total={data.pagination.total}
           onPageChange={(page) => update({ page })}
-          stale={stale}
+          stale={stale || result.isFetching}
         />
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <QueueToolbar state={state} onChange={update} onClear={handleClear} />
+    <div ref={queueRootRef} className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <QueueToolbar state={state} onChange={update} onClear={handleClear} />
+        <Button
+          variant="secondary"
+          aria-haspopup="dialog"
+          aria-keyshortcuts="?"
+          onClick={() => setShortcutHelpOpen(true)}
+        >
+          Keyboard shortcuts <kbd className="ml-1 font-mono">?</kbd>
+        </Button>
+      </div>
       <p role="status" className="min-h-5 text-meta text-fg-muted">
         {data && (result.isFetching || stale) ? "Updating results…" : ""}
       </p>
@@ -310,11 +526,16 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
         </section>
       ) : null}
       {content}
+      <QueueShortcutHelp
+        open={shortcutHelpOpen}
+        decisionsEnabled={decisionsEnabled}
+        onClose={() => setShortcutHelpOpen(false)}
+      />
       <Dialog
-        open={confirmation !== null}
+        open={activeConfirmation !== null}
         onClose={() => setConfirmation(null)}
         title={
-          confirmation?.decision === "approve"
+          activeConfirmation?.decision === "approve"
             ? "Confirm bulk approval"
             : "Confirm bulk rejection"
         }
@@ -330,28 +551,30 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
               Cancel
             </Button>
             <Button
-              variant={confirmation?.decision === "reject" ? "danger" : "primary"}
+              variant={activeConfirmation?.decision === "reject" ? "danger" : "primary"}
               onClick={() => void submitBulkDecision()}
               loading={bulkDecision.isPending}
-              disabled={!confirmation || bulkDecision.isPending}
+              disabled={!activeConfirmation || bulkDecision.isPending}
             >
               Confirm{" "}
-              {confirmation?.decision === "approve" ? "approval" : "rejection"}
-              {confirmation ? ` of ${confirmation.actions.length} actions` : ""}
+              {activeConfirmation?.decision === "approve" ? "approval" : "rejection"}
+              {activeConfirmation
+                ? ` of ${activeConfirmation.actions.length} actions`
+                : ""}
             </Button>
           </>
         }
       >
-        {confirmation ? (
+        {activeConfirmation ? (
           <div className="space-y-3">
             <p className="text-sm text-fg">
               You are about to{" "}
-              {confirmation.decision === "approve" ? "approve" : "reject"}{" "}
-              {confirmation.actions.length} selected{" "}
-              {confirmation.actions.length === 1 ? "action" : "actions"}:
+              {activeConfirmation.decision === "approve" ? "approve" : "reject"}{" "}
+              {activeConfirmation.actions.length} selected{" "}
+              {activeConfirmation.actions.length === 1 ? "action" : "actions"}:
             </p>
             <ul className="max-h-56 space-y-2 overflow-auto text-sm text-fg">
-              {confirmation.actions.map((action) => (
+              {activeConfirmation.actions.map((action) => (
                 <li key={action.id}>
                   <span className="font-medium">{action.title}</span>
                   <span className="block text-meta text-fg-muted">
@@ -360,7 +583,7 @@ export function PendingActionsQueue({ service }: PendingActionsQueueProps) {
                 </li>
               ))}
             </ul>
-            {confirmation.decision === "approve" ? (
+            {activeConfirmation.decision === "approve" ? (
               <p className="text-meta text-fg-muted">
                 Approval does not mean the action has executed.
               </p>

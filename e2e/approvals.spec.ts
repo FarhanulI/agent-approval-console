@@ -35,6 +35,70 @@ test.describe("pending actions queue (desktop)", () => {
     expect(await firstDetailHref(page)).toBe("/approvals/act_0047");
   });
 
+  test("supports keyboard navigation, selection, and visible shortcut help", async ({ page }) => {
+    await page.goto("/approvals");
+    await expect(dataRows(page)).toHaveCount(10);
+
+    const region = page.getByRole("region", { name: "Pending actions table" });
+    const links = page.getByRole("table").getByRole("link");
+    await region.focus();
+    await page.keyboard.press("j");
+    await expect(links.nth(0)).toBeFocused();
+    await page.keyboard.press("j");
+    await expect(links.nth(1)).toBeFocused();
+    await page.keyboard.press("k");
+    await expect(links.nth(0)).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/approvals\/act_0047$/);
+
+    await page.goBack();
+    await expect(dataRows(page)).toHaveCount(10);
+    const table = page.getByRole("table");
+    const eligibleBoxes = page.getByRole("checkbox", {
+      name: /^Select action:/,
+    });
+    const firstEligibleRow = eligibleBoxes.first().locator("xpath=ancestor::tr");
+    const firstEligibleLink = firstEligibleRow.getByRole("link");
+    await firstEligibleLink.focus();
+    await page.keyboard.press("Space");
+    await expect(eligibleBoxes.first()).toBeChecked();
+
+    await region.focus();
+    await page.keyboard.press("Control+a");
+    await expect(
+      page.getByText(`${await eligibleBoxes.count()} actions selected on this page`),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByText(/selected on this page/)).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Keyboard shortcuts/ }).click();
+    const help = page.getByRole("dialog");
+    await expect(help).toContainText("Focus the next action on this page");
+    await page.keyboard.press("Escape");
+    await expect(help).toHaveCount(0);
+    await expect(table).toBeVisible();
+  });
+
+  test("navigates the filtered current page without using stale rows", async ({ page }) => {
+    await page.goto("/approvals?status=pending&page=2");
+    await expect(dataRows(page)).not.toHaveCount(0);
+
+    const region = page.getByRole("region", { name: "Pending actions table" });
+    const links = page.getByRole("table").getByRole("link");
+    await region.focus();
+    await page.keyboard.press("j");
+    await expect(links.first()).toBeFocused();
+    const secondPageHref = await links.first().getAttribute("href");
+
+    await page.getByRole("button", { name: "Next page" }).click();
+    await expect(page).toHaveURL(/page=3/);
+    await expect(region).not.toHaveAttribute("aria-busy", "true");
+    await region.focus();
+    await page.keyboard.press("j");
+    await expect(links.first()).toBeFocused();
+    expect(await links.first().getAttribute("href")).not.toBe(secondPageHref);
+  });
+
   test("searches and filters, reflected in the URL, then clears", async ({ page }) => {
     await page.goto("/approvals");
     await expect(dataRows(page)).toHaveCount(10);
@@ -188,6 +252,12 @@ test.describe("pending actions queue (desktop)", () => {
     await page.keyboard.press("a");
 
     const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "Confirm bulk approval" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+
+    await approveButton.focus();
+    await page.keyboard.press("a");
     await expect(dialog.getByRole("heading", { name: "Confirm bulk approval" })).toBeVisible();
     await page.keyboard.press("r");
     await expect(dialog.getByRole("heading", { name: "Confirm bulk approval" })).toBeVisible();
