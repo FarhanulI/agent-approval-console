@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { BackendError } from "@/features/approvals/server/actions-backend";
+import { getRunsBackend } from "@/features/runs/server/get-runs-backend";
 import {
   appendMockAuditEvent,
   listAllMockAuditEvents,
@@ -19,7 +20,13 @@ export function createMockAuditBackend(): AuditBackend {
   return {
     kind: "mock",
 
-    async record(_ctx, event) {
+    async record(ctx, event) {
+      if (event.runId) {
+        const run = await getRunsBackend().get(ctx, event.runId);
+        if (!run || run.tenantId !== event.tenantId) {
+          throw new BackendError("upstream-error", "The audit event run reference is invalid.");
+        }
+      }
       appendMockAuditEvent(event);
     },
 
@@ -53,6 +60,7 @@ export function createMockAuditBackend(): AuditBackend {
                   (!query.eventType || event.eventType === query.eventType) &&
                   (!query.outcome || event.outcome === query.outcome) &&
                   (!query.actionId || event.actionId === query.actionId) &&
+                  (!query.runId || event.runId === query.runId) &&
                   (startDate === undefined || at >= startDate) &&
                   (endDate === undefined || at <= endDate) &&
                 (!term ||

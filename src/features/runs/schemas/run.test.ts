@@ -35,4 +35,19 @@ describe("run timeline schemas", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects malformed or duplicate action references", () => {
+    expect(
+      runDetailSchema.safeParse({
+        ...runFixtures[0],
+        actionIds: ["act_0002", "act_0002"],
+      }).success,
+    ).toBe(false);
+    expect(
+      runDetailSchema.safeParse({
+        ...runFixtures[0],
+        actionIds: ["../other"],
+      }).success,
+    ).toBe(false);
+  });
 });

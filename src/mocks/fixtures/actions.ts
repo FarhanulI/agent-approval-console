@@ -142,6 +142,10 @@ const riskCycle: readonly RiskLevel[] = [
 const ACTION_COUNT = 47;
 const BASE_TIME = Date.parse("2026-10-01T08:00:00.000Z");
 const HOUR = 60 * 60 * 1000;
+const actionRunAssignments: Readonly<Record<number, string>> = {
+  1: "run_0100",
+  9: "run_0100",
+};
 
 function pad(value: number, width: number): string {
   return String(value).padStart(width, "0");
@@ -154,7 +158,7 @@ function buildAction(index: number): PendingAction {
   const created = BASE_TIME + index * 7 * HOUR;
   const updated = created + ((index % 5) + 1) * HOUR;
   const recordNumber = 1000 + ((index * 37) % 900);
-  const runNumber = 100 + Math.floor(index / 3);
+  const runId = actionRunAssignments[index];
 
   return {
     id: `act_${pad(index + 1, 4)}`,
@@ -178,8 +182,7 @@ function buildAction(index: number): PendingAction {
       },
     ],
     evidence: [],
-    // Every fourth action has no run reference, to exercise optional fields.
-    runId: index % 4 === 3 ? undefined : `run_${pad(runNumber, 4)}`,
+    runId,
     agent: template.agent,
     createdAt: new Date(created).toISOString(),
     updatedAt: new Date(updated).toISOString(),

@@ -11,6 +11,8 @@ import {
   type TestClaims,
 } from "@/test/auth-helpers";
 import { handleDecision } from "@/features/approvals/server/handlers";
+import type { RunsBackend } from "@/features/runs/server/runs-backend";
+import { runFixtures } from "@/mocks/fixtures/runs";
 import { handleGetAuditEvent, handleListAuditEvents } from "./handlers";
 
 const ORIGIN = "http://localhost:3000";
@@ -49,6 +51,7 @@ type Body = {
   items: {
     id: string;
     actionId?: string;
+    runId?: string | null;
     actorId?: string;
     actorType: string;
     outcome: string;
@@ -203,6 +206,21 @@ describe("audit read API: query behavior", () => {
     const search = await list("?search=act_0002", REVIEWER_BOTH);
     expect(search.body.items.every((i: { actionId?: string }) => i.actionId === "act_0002")).toBe(true);
 
+    const linkedRun = await list("?runId=run_0100&pageSize=100", REVIEWER_BOTH);
+    expect(linkedRun.body.items.length).toBeGreaterThan(0);
+    expect(linkedRun.body.items.every((item) => item.runId === "run_0100")).toBe(true);
+    const linkedAction = await list(
+      "?runId=run_0100&actionId=act_0010&pageSize=100",
+      REVIEWER_BOTH,
+    );
+    expect(linkedAction.body.items).toHaveLength(1);
+    const secondRunPage = await list(
+      "?runId=run_0100&pageSize=1&page=2&sortDirection=asc",
+      REVIEWER_BOTH,
+    );
+    expect(secondRunPage.body.pagination).toMatchObject({ page: 2, pageSize: 1, total: 2 });
+    expect(secondRunPage.body.items[0]?.runId).toBe("run_0100");
+
     const user = await list(
       "?actorType=user&userId=usr_dev_reviewer&eventType=decision.accepted&outcome=success&pageSize=100",
       REVIEWER_BOTH,
@@ -307,9 +325,60 @@ describe("audit semantics for decisions", () => {
     expect(JSON.stringify(event)).not.toContain("555-0100");
     expect(event!.summary).toMatch(/not been performed/i);
     expect(event!.requestId).toMatch(/^req_/);
+    expect(event!.runId).toBe("run_0100");
 
     const read = await list(`?actionId=${a.id}`);
     expect(read.body.items.some((i: { eventType: string }) => i.eventType === "decision.accepted")).toBe(true);
+  });
+
+  it("records an explicit no-run reference and rejects cross-tenant run associations", async () => {
+    const unlinked = listMockActions().find(
+      (action) =>
+        action.status === "pending" &&
+        action.targetRecord.tenantId === "tenant_east" &&
+        action.runId === undefined,
+    )!;
+    const noRunResponse = await decide(unlinked.id, REVIEWER_BOTH, {
+      decision: "approve",
+      recordVersion: unlinked.recordVersion,
+    });
+    expect(noRunResponse.status).toBe(200);
+    expect(recorded()[0]).toMatchObject({ actionId: unlinked.id, runId: null });
+
+    resetMockActionState();
+    resetMockAuditState();
+    const linked = listMockActions().find((action) => action.runId === "run_0100")!;
+    const crossTenantRuns: RunsBackend = {
+      kind: "mock",
+      list: async () => [],
+      get: async (_ctx, runId) =>
+        runId === "run_0100"
+          ? {
+              tenantId: "tenant_east",
+              detail: runFixtures[0],
+            }
+          : undefined,
+      getEvents: async () => undefined,
+    };
+    const request = new Request(`${ORIGIN}/api/actions/${linked.id}/approve`, {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "content-type": "application/json",
+        "idempotency-key": "idem-cross-run-0123456789",
+        cookie: await sessionCookie(REVIEWER_BOTH),
+      },
+      body: JSON.stringify({
+        decision: "approve",
+        recordVersion: linked.recordVersion,
+      }),
+    });
+    const response = await handleDecision(request, linked.id, "approve", {
+      runs: crossTenantRuns,
+    });
+    expect(response.status).toBe(200);
+    expect(recorded()[0]).toMatchObject({ actionId: linked.id });
+    expect(recorded()[0]?.runId).toBeUndefined();
   });
 
   it("does not duplicate the event when an idempotent request is replayed", async () => {

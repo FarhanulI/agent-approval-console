@@ -44,6 +44,7 @@ const make = (n: number, patch: Partial<AuditEventDto> = {}): AuditEventDto => (
   actorType: "user",
   actorId: "usr_1",
   actionId: `act_${n}`,
+  runId: null,
   summary: `Summary ${n}`,
   ...patch,
 });
@@ -115,6 +116,25 @@ describe("AuditLog", () => {
     expect(urlStore.get()).toBe("");
   });
 
+  it("links verified run IDs and distinguishes missing relationship data from no run", async () => {
+    const service = fakeService({
+      listEvents: vi.fn(async () => ({
+        items: [
+          make(1, { runId: "run_0100" }),
+          make(2, { runId: undefined }),
+        ],
+        pagination: { page: 1, pageSize: 10, total: 2 },
+      })),
+    });
+    renderLog(service);
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    expect(screen.getByRole("link", { name: "run_0100" }).getAttribute("href")).toBe(
+      "/runs/run_0100",
+    );
+    expect(screen.getByText("Run relationship unavailable")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "undefined" })).toBeNull();
+  });
+
   it("composes actor, user, agent, date, and event filters and resets pagination", async () => {
     const user = userEvent.setup();
     const service = fakeService();
@@ -125,6 +145,7 @@ describe("AuditLog", () => {
     await user.selectOptions(screen.getByLabelText("Actor type"), "agent");
     expect(urlStore.get()).toBe("actorType=agent");
     await user.type(screen.getByLabelText("Agent ID"), "agent_inventory");
+    await user.type(screen.getByLabelText("Run ID"), "run_0100");
     await user.type(screen.getByLabelText("User ID"), "usr_dev_reviewer");
     await user.selectOptions(screen.getByLabelText("Event type"), "decision.accepted");
     await user.selectOptions(screen.getByLabelText("Outcome"), "success");
@@ -140,6 +161,7 @@ describe("AuditLog", () => {
         expect.objectContaining({
           actorType: "agent",
           agentId: "agent_inventory",
+          runId: "run_0100",
           userId: "usr_dev_reviewer",
           eventType: "decision.accepted",
           outcome: "success",
@@ -153,6 +175,9 @@ describe("AuditLog", () => {
     expect(urlStore.get()).not.toContain("page=3");
     expect(screen.getByRole("list", { name: "Active filters" }).textContent).toContain(
       "Agent ID: agent_inventory",
+    );
+    expect(screen.getByRole("list", { name: "Active filters" }).textContent).toContain(
+      "Run ID: run_0100",
     );
 
     await user.click(screen.getByRole("button", { name: "Clear date range" }));
@@ -210,6 +235,20 @@ describe("AuditLog", () => {
     expect(await within(dialog).findByText(/outcome was not confirmed/i)).toBeTruthy();
     expect(within(dialog).getByText("Yes (not shown)")).toBeTruthy();
     expect(service.getEvent).toHaveBeenCalledWith("evt_2", expect.anything());
+  });
+
+  it("shows a verified run link in event details", async () => {
+    const user = userEvent.setup();
+    const service = fakeService({
+      getEvent: vi.fn(async () => make(1, { runId: "run_0100" })),
+    });
+    renderLog(service);
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    await user.click(screen.getByRole("button", { name: "View details for event evt_1" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("link", { name: "run_0100" }).getAttribute("href")).toBe(
+      "/runs/run_0100",
+    );
   });
 
   it("shows a safe not-found message in the dialog", async () => {

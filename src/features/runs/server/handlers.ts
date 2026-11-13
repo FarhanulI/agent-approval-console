@@ -8,7 +8,11 @@ import {
   jsonResponse,
   unauthenticated,
 } from "@/lib/server/http";
-import { BackendError } from "@/features/approvals/server/actions-backend";
+import {
+  BackendError,
+  type ActionsBackend,
+} from "@/features/approvals/server/actions-backend";
+import { getBackend } from "@/features/approvals/server/get-backend";
 import {
   consumeRunStreamDisconnect,
   getRunsScenario,
@@ -20,7 +24,7 @@ import { logServerEvent } from "@/lib/server/logger";
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const eventIdSchema = z.string().max(128);
-type Deps = { backend?: RunsBackend };
+type Deps = { backend?: RunsBackend; actions?: ActionsBackend };
 type RunReadAuthorization =
   | { ok: false; response: Response }
   | { ok: true; context: RunContext };
@@ -75,6 +79,29 @@ async function authorizeRunRead(
   };
 }
 
+async function hasValidActionReferences(
+  runId: string,
+  actionIds: readonly string[],
+  tenantId: string,
+  context: RunContext,
+  actions: ActionsBackend,
+): Promise<boolean> {
+  if (actionIds.length === 0) return true;
+  if (!authorize(context.principal, "action:view", { tenantId }).allowed) return false;
+
+  for (const actionId of actionIds) {
+    const action = await actions.getAction(context, actionId);
+    if (
+      !action ||
+      action.targetRecord.tenantId !== tenantId ||
+      action.runId !== runId
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function handleListRuns(
   request: Request,
   deps: Deps = {},
@@ -84,6 +111,7 @@ export async function handleListRuns(
   if (!authorized.ok) return authorized.response;
 
   const backend = deps.backend ?? getRunsBackend();
+  const actions = deps.actions ?? getBackend();
   if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
     return jsonResponse({ items: [{ id: "invalid" }] }, requestId);
   }
@@ -103,6 +131,32 @@ export async function handleListRuns(
         "The run backend could not complete the request.",
         requestId,
       );
+    }
+    for (const entry of items) {
+      if (
+        entry.summary.actionIds.length > 0 &&
+        !authorize(authorized.context.principal, "action:view", {
+          tenantId: entry.tenantId,
+        }).allowed
+      ) {
+        return forbidden(requestId);
+      }
+      if (
+        !(await hasValidActionReferences(
+          entry.summary.id,
+          entry.summary.actionIds,
+          entry.tenantId,
+          authorized.context,
+          actions,
+        ))
+      ) {
+        return errorResponse(
+          502,
+          "bad_gateway",
+          "The run backend could not complete the request.",
+          requestId,
+        );
+      }
     }
     return jsonResponse({ items: items.map((entry) => entry.summary) }, requestId);
   } catch (error) {
@@ -128,6 +182,7 @@ export async function handleGetRun(
   }
 
   const backend = deps.backend ?? getRunsBackend();
+  const actions = deps.actions ?? getBackend();
   if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
     return jsonResponse({ run: { id: runId } }, requestId);
   }
@@ -140,6 +195,30 @@ export async function handleGetRun(
       }).allowed
     ) {
       return runNotFound(requestId);
+    }
+    if (
+      stored.detail.actionIds.length > 0 &&
+      !authorize(authorized.context.principal, "action:view", {
+        tenantId: stored.tenantId,
+      }).allowed
+    ) {
+      return forbidden(requestId);
+    }
+    if (
+      !(await hasValidActionReferences(
+        stored.detail.id,
+        stored.detail.actionIds,
+        stored.tenantId,
+        authorized.context,
+        actions,
+      ))
+    ) {
+      return errorResponse(
+        502,
+        "bad_gateway",
+        "The run backend could not complete the request.",
+        requestId,
+      );
     }
     return jsonResponse({ run: stored.detail }, requestId);
   } catch (error) {

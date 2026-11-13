@@ -36,6 +36,7 @@ export const SEED_AUDIT_EVENTS: readonly AuditEventRecord[] = actionFixtures
             ? "usr_dev_reviewer"
             : "usr_dev_main_reviewer",
       actionId: action.id,
+      runId: action.runId ?? null,
       requestId: `req_seed_${String(index + 1).padStart(4, "0")}`,
       details:
         template.eventType === "decision.accepted"

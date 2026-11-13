@@ -49,6 +49,7 @@ export type AuditScenario =
 export type RunsScenario =
   | { kind: "ok" }
   | { kind: "empty" }
+  | { kind: "missing-run-detail" }
   | { kind: "server-error" }
   | { kind: "malformed" }
   | { kind: "delayed"; delayMs?: number }

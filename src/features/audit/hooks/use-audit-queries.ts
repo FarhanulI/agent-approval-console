@@ -13,12 +13,17 @@ export const auditKeys = {
   detail: (eventId: string) => [...auditKeys.details(), eventId] as const,
 };
 
-export function useAuditEventsQuery(query: AuditEventQuery, service: AuditService = auditService) {
+export function useAuditEventsQuery(
+  query: AuditEventQuery,
+  service: AuditService = auditService,
+  options: { refetchInterval?: number | false } = {},
+) {
   return useQuery({
     queryKey: auditKeys.list(query),
     queryFn: ({ signal }) => service.listEvents(query, { signal }),
     placeholderData: keepPreviousData,
     retry: false,
+    refetchInterval: options.refetchInterval,
   });
 }
 

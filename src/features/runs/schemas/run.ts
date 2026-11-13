@@ -9,6 +9,8 @@ const timestampSchema = z.string().min(1).refine(
   { message: "Timestamp must be a valid ISO date string." },
 );
 
+const opaqueIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+
 export const runStepStatusSchema = z.enum([
   "queued",
   "running",
@@ -31,14 +33,14 @@ export const runEventTypeSchema = z.enum([
 ]);
 
 export const runEventPayloadSchema = z.strictObject({
-  actionId: z.string().min(1).optional(),
+  actionId: opaqueIdSchema.optional(),
   decision: z.enum(["approved", "rejected"]).optional(),
   message: z.string().max(500).optional(),
 });
 
 export const runEventSchema = z.strictObject({
   id: z.string().min(1).max(128),
-  runId: z.string().min(1).max(64),
+  runId: opaqueIdSchema,
   sequence: z.number().int().positive(),
   type: runEventTypeSchema,
   timestamp: timestampSchema,
@@ -54,15 +56,18 @@ export const runStepSchema = z.strictObject({
   startedAt: timestampSchema.optional(),
   completedAt: timestampSchema.optional(),
   durationMs: z.number().int().nonnegative().optional(),
-  actionId: z.string().min(1).max(64).optional(),
+  actionId: opaqueIdSchema.optional(),
   errorSummary: z.string().min(1).max(500).optional(),
 });
 
 export const runSummarySchema = z.strictObject({
-  id: z.string().min(1).max(64),
+  id: opaqueIdSchema,
   status: runStatusSchema,
   summary: z.string().min(1).max(500),
-  actionIds: z.array(z.string().min(1).max(64)),
+  actionIds: z.array(opaqueIdSchema).refine(
+    (actionIds) => new Set(actionIds).size === actionIds.length,
+    "A run cannot list the same action more than once.",
+  ),
   startedAt: timestampSchema,
   completedAt: timestampSchema.optional(),
   currentStep: z.string().max(120).optional(),

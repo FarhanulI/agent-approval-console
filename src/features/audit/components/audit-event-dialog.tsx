@@ -7,7 +7,12 @@ import { ActionsServiceError } from "@/features/approvals/services/actions-servi
 import { formatDateTime } from "@/lib/utils/format-date";
 import { useAuditEventQuery } from "../hooks/use-audit-queries";
 import type { AuditService } from "../types";
-import { eventTypeLabels, isLinkableActionId, outcomeLabels } from "../utils/presentation";
+import {
+  eventTypeLabels,
+  isLinkableActionId,
+  isLinkableRunId,
+  outcomeLabels,
+} from "../utils/presentation";
 import { EventTypeBadge, OutcomeBadge } from "./audit-badges";
 import Link from "next/link";
 
@@ -94,6 +99,22 @@ export function AuditEventDialog({ eventId, onClose, service }: AuditEventDialog
             )
           ) : (
             "—"
+          )}
+        </Row>
+        <Row label="Run">
+          {event.runId === null ? (
+            "No associated run"
+          ) : event.runId === undefined ? (
+            "Run relationship unavailable"
+          ) : isLinkableRunId(event.runId) ? (
+            <Link
+              href={`/runs/${encodeURIComponent(event.runId)}`}
+              className="font-mono text-accent underline-offset-2 hover:underline"
+            >
+              {event.runId}
+            </Link>
+          ) : (
+            "Run relationship unavailable"
           )}
         </Row>
         <Row label="Request ID">

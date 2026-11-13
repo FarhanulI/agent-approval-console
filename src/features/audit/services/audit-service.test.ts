@@ -9,6 +9,7 @@ const event = {
   outcome: "success",
   occurredAt: "2026-10-01T08:00:00.000Z",
   actorType: "user",
+  runId: "run_0100",
   summary: "ok",
 };
 const page = { items: [event], pagination: { page: 1, pageSize: 10, total: 1 } };
@@ -22,6 +23,7 @@ describe("audit service", () => {
     const service = createHttpAuditService({ fetchFn });
     const result = await service.listEvents({
       page: 2,
+      runId: "run_0100",
       actorType: "agent",
       agentId: "agent_inventory",
       outcome: "unknown",
@@ -30,9 +32,19 @@ describe("audit service", () => {
       search: "a b",
     });
     expect(fetchFn.mock.calls[0]![0]).toBe(
-      "/api/audit-events?page=2&actorType=agent&agentId=agent_inventory&outcome=unknown&startDate=2026-10-01T00%3A00%3A00.000Z&endDate=2026-10-02T23%3A59%3A59.999Z&search=a+b",
+      "/api/audit-events?page=2&runId=run_0100&actorType=agent&agentId=agent_inventory&outcome=unknown&startDate=2026-10-01T00%3A00%3A00.000Z&endDate=2026-10-02T23%3A59%3A59.999Z&search=a+b",
     );
     expect(result.items[0]!.outcome).toBe("success");
+  });
+
+  it("rejects audit events outside the requested run filter", async () => {
+    const service = serviceWith(() => Response.json({
+      ...page,
+      items: [{ ...event, runId: "run_0101" }],
+    }));
+    await expect(service.listEvents({ runId: "run_0100" })).rejects.toMatchObject({
+      kind: "malformed",
+    });
   });
 
   it("rejects malformed bodies, including a smuggled tenantId", async () => {

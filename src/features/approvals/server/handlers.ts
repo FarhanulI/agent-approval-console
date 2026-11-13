@@ -26,6 +26,8 @@ import type {
 import type { AuditBackend } from "@/features/audit/server/audit-backend";
 import { getAuditBackend } from "@/features/audit/server/get-audit-backend";
 import { recordAuditEvent } from "@/features/audit/server/handlers";
+import { getRunsBackend } from "@/features/runs/server/get-runs-backend";
+import type { RunsBackend } from "@/features/runs/server/runs-backend";
 import { browserDecisionRequestSchema } from "../schemas/decision-request";
 import {
   bulkDecisionRequestSchema,
@@ -45,7 +47,56 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_BODY_BYTES = 8 * 1024;
 const MAX_BULK_BODY_BYTES = 24 * 1024;
 
-type Deps = { backend?: ActionsBackend; audit?: AuditBackend };
+type Deps = { backend?: ActionsBackend; audit?: AuditBackend; runs?: RunsBackend };
+
+async function resolveAuditRunId(
+  action: { id: string; runId?: string },
+  tenantId: string,
+  ctx: BackendContext,
+  runs: RunsBackend,
+): Promise<string | null | undefined> {
+  if (action.runId === undefined) return null;
+  if (
+    !/^[A-Za-z0-9_-]{1,64}$/.test(action.runId) ||
+    !authorize(ctx.principal, "run:view", { tenantId }).allowed
+  ) {
+    return undefined;
+  }
+
+  try {
+    const stored = await runs.get(ctx, action.runId);
+    if (
+      stored?.detail.id === action.runId &&
+      stored.tenantId === tenantId &&
+      stored.detail.actionIds.includes(action.id)
+    ) {
+      return action.runId;
+    }
+  } catch (error) {
+    logServerEvent("warn", "approvals-bff", "audit_run_relationship_unavailable", {
+      requestId: ctx.requestId,
+      errorCode: error instanceof BackendError ? error.kind : "run_lookup_failed",
+    });
+    return undefined;
+  }
+
+  logServerEvent("warn", "approvals-bff", "audit_run_relationship_unavailable", {
+    requestId: ctx.requestId,
+    errorCode: "run_reference_unavailable",
+  });
+  return undefined;
+}
+
+async function hasValidActionRunReference(
+  action: { id: string; runId?: string },
+  tenantId: string,
+  ctx: BackendContext,
+  runs: RunsBackend,
+): Promise<boolean> {
+  if (action.runId === undefined) return true;
+  if (!authorize(ctx.principal, "run:view", { tenantId }).allowed) return false;
+  return (await resolveAuditRunId(action, tenantId, ctx, runs)) === action.runId;
+}
 
 /** Maps backend failures to sanitized errors. `decision` preserves uncertainty. */
 function backendFailure(error: unknown, requestId: string, decision: boolean) {
@@ -128,6 +179,7 @@ export async function handleListActions(request: Request, deps: Deps = {}) {
       ctx,
       parsed.data,
     );
+    const runs = deps.runs ?? getRunsBackend();
     const leaked = result.items.some(
       (item) =>
         !authorize(principal, "action:view", {
@@ -146,6 +198,40 @@ export async function handleListActions(request: Request, deps: Deps = {}) {
         "The approvals backend could not complete the request.",
         requestId,
       );
+    }
+    for (const action of result.items) {
+      const tenantId = action.targetRecord.tenantId;
+      if (!tenantId) {
+        return errorResponse(
+          502,
+          "bad_gateway",
+          "The approvals backend could not complete the request.",
+          requestId,
+        );
+      }
+      if (
+        action.runId !== undefined &&
+        !authorize(principal, "run:view", {
+          tenantId,
+        }).allowed
+      ) {
+        return forbidden(requestId);
+      }
+      if (
+        !(await hasValidActionRunReference(
+          action,
+          tenantId,
+          ctx,
+          runs,
+        ))
+      ) {
+        return errorResponse(
+          502,
+          "bad_gateway",
+          "The approvals backend could not complete the request.",
+          requestId,
+        );
+      }
     }
     return jsonResponse(result, requestId);
   } catch (error) {
@@ -177,17 +263,41 @@ export async function handleGetAction(
   }
 
   try {
+    const runs = deps.runs ?? getRunsBackend();
     const action = await (deps.backend ?? getBackend()).getAction(
       { requestId, principal },
       actionId,
     );
+    const tenantId = action?.targetRecord.tenantId;
     if (
       !action ||
+      !tenantId ||
       !authorize(principal, "action:view", {
-        tenantId: action.targetRecord.tenantId,
+        tenantId,
       }).allowed
     ) {
       return notFound(requestId);
+    }
+    if (
+      action.runId !== undefined &&
+      !authorize(principal, "run:view", { tenantId }).allowed
+    ) {
+      return forbidden(requestId);
+    }
+    if (
+      !(await hasValidActionRunReference(
+        action,
+        tenantId,
+        { requestId, principal },
+        runs,
+      ))
+    ) {
+      return errorResponse(
+        502,
+        "bad_gateway",
+        "The approvals backend could not complete the request.",
+        requestId,
+      );
     }
     return jsonResponse(action, requestId);
   } catch (error) {
@@ -240,7 +350,9 @@ export async function handleDecision(
   const permission = `action:${decision}` as const;
   const backend = deps.backend ?? getBackend();
   const audit = deps.audit ?? getAuditBackend();
+  const runs = deps.runs ?? getRunsBackend();
   const ctx: BackendContext = { requestId, principal };
+  let auditRunId: string | null | undefined;
   const audit_ = (
     tenantId: string,
     eventType: AuditEventType,
@@ -257,6 +369,7 @@ export async function handleDecision(
       actorType: "user",
       actorId: principal.userId,
       actionId,
+      runId: auditRunId,
       requestId,
     });
 
@@ -274,6 +387,9 @@ export async function handleDecision(
       .catch(() => undefined);
     const targetTenant = target?.targetRecord.tenantId;
     if (targetTenant && principal.tenantIds.includes(targetTenant)) {
+      auditRunId = target
+        ? await resolveAuditRunId(target, targetTenant, ctx, runs)
+        : undefined;
       await audit_(
         targetTenant,
         "decision.denied",
@@ -392,6 +508,7 @@ export async function handleDecision(
     }
     if (tenantId === undefined) return notFound(requestId);
     knownTenant = tenantId;
+    auditRunId = await resolveAuditRunId(action, tenantId, ctx, runs);
 
     const scope = `${principal.userId}|${idempotencyKey}`;
     const fingerprint = JSON.stringify([
@@ -707,9 +824,11 @@ export async function handleDecision(
 
       const backend = deps.backend ?? getBackend();
       const audit = deps.audit ?? getAuditBackend();
+      const runs = deps.runs ?? getRunsBackend();
       const ctx: BackendContext = { requestId, principal };
       const results = new Map<string, BulkDecisionItemResult>();
       const commands: Array<BulkDecideCommand & { idempotencyKey: string }> = [];
+      const auditRunIds = new Map<string, string | null | undefined>();
       const itemAudit = (
         item: (typeof parsed.data.decisions)[number],
         tenantId: string,
@@ -727,6 +846,7 @@ export async function handleDecision(
           actorType: "user",
           actorId: principal.userId,
           actionId: item.actionId,
+          runId: auditRunIds.get(item.actionId),
           requestId,
         });
 
@@ -776,6 +896,11 @@ export async function handleDecision(
           });
           continue;
         }
+
+        auditRunIds.set(
+          item.actionId,
+          await resolveAuditRunId(action, tenantId, ctx, runs),
+        );
 
         const permission = `action:${item.decision}` as const;
         if (!authorize(principal, permission, { tenantId }).allowed) {

@@ -51,6 +51,10 @@ const isoDateTime = z
     message: "Timestamp must be a valid ISO 8601 string.",
   });
 
+export const auditRunIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,64}$/, "Run identifiers must be valid opaque identifiers.");
+
 /** Allow-listed metadata. Free text such as the decision reason is excluded. */
 export const auditDetailsSchema = z.strictObject({
   decision: z.enum(["approve", "reject"]).optional(),
@@ -70,7 +74,12 @@ export const auditEventDtoSchema = z.strictObject({
   actorType: auditActorTypeSchema,
   /** Absent for system events. */
   actorId: z.string().min(1).optional(),
-  actionId: z.string().min(1).optional(),
+  actionId: auditRunIdSchema.optional(),
+  /**
+   * A run ID is captured only when its relationship is verified. Null means
+   * the event is known not to belong to a run; omission means unavailable.
+   */
+  runId: auditRunIdSchema.nullable().optional(),
   requestId: z.string().optional(),
   summary: z.string().min(1).max(300),
   details: auditDetailsSchema.optional(),
@@ -96,6 +105,7 @@ export function toAuditEventDto(record: AuditEventRecord): AuditEventDto {
     actorType: record.actorType,
     actorId: record.actorId,
     actionId: record.actionId,
+    ...(record.runId !== undefined ? { runId: record.runId } : {}),
     requestId: record.requestId,
     summary: record.summary,
     details: record.details,

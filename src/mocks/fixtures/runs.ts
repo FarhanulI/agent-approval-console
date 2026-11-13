@@ -29,7 +29,7 @@ const waitingRun: RunDetail = {
   id: "run_0100",
   status: "waiting",
   summary: "Review and merge duplicate supplier records.",
-  actionIds: ["act_0002"],
+  actionIds: ["act_0002", "act_0010"],
   startedAt: at(0),
   currentStep: "Awaiting reviewer decision",
   agent: { id: "agent_master_data", name: "Master Data Agent" },

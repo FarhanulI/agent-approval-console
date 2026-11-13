@@ -51,11 +51,11 @@
 Backend contract may require additional states. Approval and execution are separate: approved does not mean execution succeeded.
 
 ## Core domain concepts
-- PendingAction: proposal, status, risk, target record, changes, evidence, record version, timestamps and associated run.
-- AgentRun: execution ID, status, start/end timestamps and associated actions.
+- PendingAction: proposal, status, risk, target record, changes, evidence, record version, timestamps and an optional run reference.
+- AgentRun: execution ID, status, start/end timestamps and associated actions. Run/action references must agree and remain tenant-scoped.
 - Evidence: source reference, source type, excerpt if allowed, and observed timestamp.
 - RecordChange: field, label, before value and proposed after value.
-- AuditEvent: actor, event type, resource, outcome, timestamp and request/correlation ID.
+- AuditEvent: actor, event type, resource, outcome, timestamp, request/correlation ID, optional action reference, and an optional run association. A null run means known-unassociated; an omitted run reference means unavailable. Run associations are never inferred from timestamps or identifiers.
 - Keep agent reasoning as a concise user-facing summary; do not expose hidden chain-of-thought.
 
 ## Proposed frontend API contract (must be reconciled with backend)
@@ -66,7 +66,7 @@ Backend contract may require additional states. Approval and execution are separ
 - `POST /api/actions/bulk-decision`
 - `GET /api/runs/:id`
 - `GET /api/runs/:id/events` (SSE)
-- `GET /api/audit-events`
+- `GET /api/audit-events` (supports internal `actionId` and `runId` filters)
 
 These are proposed frontend contracts, not claims about existing bridge endpoints.
 

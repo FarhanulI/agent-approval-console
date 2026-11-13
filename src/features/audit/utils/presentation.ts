@@ -32,3 +32,7 @@ export const outcomeTones: Record<AuditOutcome, OutcomeTone> = {
 export function isLinkableActionId(actionId: string | undefined): actionId is string {
   return actionId !== undefined && /^[A-Za-z0-9_-]{1,64}$/.test(actionId);
 }
+
+export function isLinkableRunId(runId: string | null | undefined): runId is string {
+  return runId !== undefined && runId !== null && /^[A-Za-z0-9_-]{1,64}$/.test(runId);
+}

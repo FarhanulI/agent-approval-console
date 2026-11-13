@@ -120,6 +120,45 @@ test.describe("audit log", () => {
     await expect(dialog).toBeHidden();
   });
 
+  test("navigates from a verified audit event to its run and back to the filtered log", async ({
+    page,
+  }) => {
+    await page.goto("/audit?runId=run_0100");
+    await expect(rows(page)).toHaveCount(2);
+    await page.getByRole("link", { name: "run_0100" }).first().click();
+
+    await expect(page).toHaveURL(/\/runs\/run_0100$/);
+    await expect(page.getByRole("link", { name: "act_0002", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "act_0010", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Related audit events" })).toBeVisible();
+    await expect(
+      page.getByRole("list", { name: "Run audit events" }).locator("li"),
+    ).toHaveCount(2);
+
+    await page.getByRole("link", { name: "View in audit log" }).click();
+    await expect(page).toHaveURL(/\/audit\?runId=run_0100$/);
+    await expect(rows(page)).toHaveCount(2);
+  });
+
+  test("does not fabricate a run link for an explicitly unassociated event", async ({
+    page,
+  }) => {
+    await page.goto("/audit?q=act_0004");
+    await expect(rows(page)).toHaveCount(1);
+    await expect(rows(page).first()).toContainText("No associated run");
+    await expect(rows(page).getByRole("link", { name: /^run_/ })).toHaveCount(0);
+  });
+
+  test("shows a not-found state when a linked run's details are unavailable", async ({
+    page,
+  }) => {
+    await mockControl(page.context().request, "runs", { kind: "missing-run-detail" });
+    await page.goto("/audit?runId=run_0100");
+    await page.getByRole("link", { name: "run_0100" }).first().click();
+    await expect(page.getByText("Run not found")).toBeVisible();
+    await expect(page.getByText("This run does not exist or is not available to your account.")).toBeVisible();
+  });
+
   test("a decision appears in the audit log without being labelled as executed", async ({ page }) => {
     const request = page.context().request;
     const before = (await (await request.get("/api/audit-events?actionId=act_0001")).json()).pagination.total;

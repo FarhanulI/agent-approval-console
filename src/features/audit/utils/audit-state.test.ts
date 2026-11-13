@@ -12,7 +12,7 @@ const parse = (query: string) => parseAuditState(new URLSearchParams(query));
 describe("audit URL state", () => {
   it("round-trips filters, sort and page, omitting defaults", () => {
     const state = parse(
-      "q=abc&actorId=usr_1&actorType=user&userId=usr_1&systemId=sys_1&agentId=agent_1&type=decision.denied&outcome=unknown&from=2026-10-01&to=2026-10-02&sort=asc&page=3",
+      "q=abc&actorId=usr_1&actorType=user&userId=usr_1&systemId=sys_1&agentId=agent_1&type=decision.denied&outcome=unknown&runId=run_0100&from=2026-10-01&to=2026-10-02&sort=asc&page=3",
     );
     expect(state).toMatchObject({
       search: "abc",
@@ -23,21 +23,23 @@ describe("audit URL state", () => {
       agentId: "agent_1",
       eventType: "decision.denied",
       outcome: "unknown",
+      runId: "run_0100",
       direction: "asc",
       page: 3,
     });
     expect(serializeAuditState(state).toString()).toBe(
-      "q=abc&actorId=usr_1&actorType=user&userId=usr_1&systemId=sys_1&agentId=agent_1&type=decision.denied&outcome=unknown&from=2026-10-01&to=2026-10-02&sort=asc&page=3",
+      "q=abc&actorId=usr_1&actorType=user&userId=usr_1&systemId=sys_1&agentId=agent_1&type=decision.denied&outcome=unknown&runId=run_0100&from=2026-10-01&to=2026-10-02&sort=asc&page=3",
     );
     expect(serializeAuditState(parse("")).toString()).toBe("");
   });
 
   it("falls back for invalid values and drops an inverted date range", () => {
-    const state = parse("type=x&outcome=y&actorType=robot&from=2026-02-31&page=-2&sort=up");
+    const state = parse("type=x&outcome=y&actorType=robot&runId=../bad&from=2026-02-31&page=-2&sort=up");
     expect(state).toMatchObject({
       eventType: undefined,
       outcome: undefined,
       actorType: undefined,
+      runId: undefined,
       from: undefined,
       page: 1,
       direction: "desc",

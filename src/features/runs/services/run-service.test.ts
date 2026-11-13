@@ -11,7 +11,7 @@ function response(payload: unknown, status = 200) {
 }
 
 describe("HTTP runs service", () => {
-  it("validates list and detail responses and encodes run IDs", async () => {
+  it("validates list and detail responses for valid run IDs", async () => {
     const fixture = runFixtures[0];
     const summary = {
       id: fixture.id,
@@ -22,7 +22,7 @@ describe("HTTP runs service", () => {
       currentStep: fixture.currentStep,
       agent: fixture.agent,
     };
-    const encodedIdRun = { ...runFixtures[0], id: "run/0100" };
+    const encodedIdRun = { ...runFixtures[0], id: "run_0100" };
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(response({ items: [summary] }))
@@ -30,13 +30,13 @@ describe("HTTP runs service", () => {
     const service = createHttpRunsService({ fetchFn });
 
     const list = await service.listRuns();
-    const run = await service.getRun("run/0100");
+    const run = await service.getRun("run_0100");
 
     expect(list.items).toHaveLength(1);
-    expect(run.id).toBe("run/0100");
+    expect(run.id).toBe("run_0100");
     expect(fetchFn.mock.calls.map(([url]) => url)).toEqual([
       "/api/runs",
-      "/api/runs/run%2F0100",
+      "/api/runs/run_0100",
     ]);
   });
 

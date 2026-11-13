@@ -12,7 +12,9 @@ import {
   sessionCookie,
   setTestEnv,
 } from "@/test/auth-helpers";
+import { runFixtures } from "@/mocks/fixtures/runs";
 import { createBridgeRunsBackend } from "./bridge-runs-backend";
+import type { RunsBackend } from "./runs-backend";
 import {
   handleGetRun,
   handleListRuns,
@@ -78,7 +80,7 @@ describe("run API authorization and snapshots", () => {
       events: { type: string }[];
     };
     expect(initial.status).toBe("waiting");
-    expect(initial.actionIds).toContain("act_0002");
+    expect(initial.actionIds).toEqual(["act_0002", "act_0010"]);
 
     const decision = commitMockDecision(
       "act_0002",
@@ -100,6 +102,32 @@ describe("run API authorization and snapshots", () => {
     expect(resolved.status).toBe("running");
     expect(resolved.events.at(-2)?.type).toBe("approval.resolved");
     expect(resolved.resultSummary).toContain("not been confirmed");
+  });
+
+  it("fails closed when a run references a missing or cross-tenant action", async () => {
+    const invalidRun = { ...runFixtures[0], actionIds: ["act_0001"] };
+    const backend: RunsBackend = {
+      kind: "mock",
+      list: async () => [],
+      get: async () => ({ tenantId: "tenant_main", detail: invalidRun }),
+      getEvents: async () => undefined,
+    };
+    const response = await handleGetRun(
+      await get("/api/runs/run_0100"),
+      "run_0100",
+      { backend },
+    );
+    expect(response.status).toBe(502);
+  });
+
+  it("returns not-found when related run details are unavailable", async () => {
+    setRunsScenario({ kind: "missing-run-detail" });
+    const response = await handleGetRun(
+      await get("/api/runs/run_0100"),
+      "run_0100",
+    );
+    expect(response.status).toBe(404);
+    expect((await body(response)).error).toMatchObject({ code: "not_found" });
   });
 
   it("reports an empty result and sanitized mock backend failures", async () => {

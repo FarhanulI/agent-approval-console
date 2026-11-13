@@ -29,11 +29,13 @@ function IdFilter({
   label,
   value,
   onChange,
+  maxLength = 128,
 }: {
   id: string;
   label: string;
   value: string | undefined;
   onChange: (value: string | undefined) => void;
+  maxLength?: number;
 }) {
   const [draft, setDraft] = useState(value ?? "");
   const [committed, setCommitted] = useState(value ?? "");
@@ -67,7 +69,7 @@ function IdFilter({
         id={id}
         type="search"
         value={draft}
-        maxLength={128}
+        maxLength={maxLength}
         placeholder={`${label} (optional)`}
         onChange={(event) => setDraft(event.target.value)}
       />
@@ -136,6 +138,7 @@ export function AuditToolbar({ state, onChange, onClear }: AuditToolbarProps) {
   const userIdId = useId();
   const systemIdId = useId();
   const agentIdId = useId();
+  const runIdId = useId();
   const outcomeId = useId();
   const fromId = useId();
   const toId = useId();
@@ -193,6 +196,13 @@ export function AuditToolbar({ state, onChange, onClear }: AuditToolbarProps) {
           label="Agent ID"
           value={state.agentId}
           onChange={(agentId) => onChange({ agentId })}
+        />
+        <IdFilter
+          id={runIdId}
+          label="Run ID"
+          value={state.runId}
+          onChange={(runId) => onChange({ runId })}
+          maxLength={64}
         />
         <div className="w-full space-y-1 sm:w-48">
           <label htmlFor={typeId} className="text-meta font-medium text-fg-muted">
@@ -289,6 +299,7 @@ export function AuditToolbar({ state, onChange, onClear }: AuditToolbarProps) {
           {state.userId ? <li className="rounded-md bg-surface-muted px-2 py-1">User ID: {state.userId}</li> : null}
           {state.systemId ? <li className="rounded-md bg-surface-muted px-2 py-1">System ID: {state.systemId}</li> : null}
           {state.agentId ? <li className="rounded-md bg-surface-muted px-2 py-1">Agent ID: {state.agentId}</li> : null}
+          {state.runId ? <li className="rounded-md bg-surface-muted px-2 py-1">Run ID: {state.runId}</li> : null}
           {state.eventType ? (
             <li className="rounded-md bg-surface-muted px-2 py-1">
               Event type: {eventTypeLabels[state.eventType]}

@@ -2,6 +2,7 @@ import {
   auditActorTypeSchema,
   auditEventTypeSchema,
   auditOutcomeSchema,
+  auditRunIdSchema,
   type AuditActorType,
   type AuditEventType,
   type AuditOutcome,
@@ -25,6 +26,7 @@ export type AuditState = {
   agentId?: string;
   eventType?: AuditEventType;
   outcome?: AuditOutcome;
+  runId?: string;
   from?: string;
   to?: string;
   direction: AuditSortDirection;
@@ -47,6 +49,11 @@ function validIdentifier(value: string | null): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+function validRunId(value: string | null): string | undefined {
+  const parsed = auditRunIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 /** Lenient: invalid URL values fall back to defaults instead of throwing. */
 export function parseAuditState(params: ParamsReader): AuditState {
   const page = Number.parseInt(params.get("page") ?? "", 10);
@@ -65,6 +72,7 @@ export function parseAuditState(params: ParamsReader): AuditState {
     agentId: validIdentifier(params.get("agentId")),
     eventType: eventType.success ? eventType.data : undefined,
     outcome: outcome.success ? outcome.data : undefined,
+    runId: validRunId(params.get("runId")),
     from,
     to,
     direction: params.get("sort") === "asc" ? "asc" : "desc",
@@ -83,6 +91,7 @@ export function serializeAuditState(state: AuditState): URLSearchParams {
   if (state.agentId) params.set("agentId", state.agentId);
   if (state.eventType) params.set("type", state.eventType);
   if (state.outcome) params.set("outcome", state.outcome);
+  if (state.runId) params.set("runId", state.runId);
   if (state.from) params.set("from", state.from);
   if (state.to) params.set("to", state.to);
   if (state.direction === "asc") params.set("sort", "asc");
@@ -103,6 +112,7 @@ export function toAuditQuery(state: AuditState): AuditEventQuery {
     agentId: state.agentId,
     eventType: state.eventType,
     outcome: state.outcome,
+    runId: state.runId,
     search: state.search.trim() || undefined,
     startDate: state.from ? `${state.from}T00:00:00.000Z` : undefined,
     endDate: state.to ? `${state.to}T23:59:59.999Z` : undefined,
@@ -119,6 +129,7 @@ export function hasActiveAuditFilters(state: AuditState): boolean {
       state.agentId ||
       state.eventType ||
       state.outcome ||
+      state.runId ||
       state.from ||
       state.to,
   );
@@ -135,6 +146,7 @@ export function clearAuditFilters(state: AuditState): Partial<AuditState> {
     agentId: undefined,
     eventType: undefined,
     outcome: undefined,
+    runId: undefined,
     from: undefined,
     to: undefined,
     direction: state.direction,

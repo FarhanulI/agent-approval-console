@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils/cn";
 import { formatDateTime } from "@/lib/utils/format-date";
 import type { AuditEventDto } from "../schemas/audit-event";
 import type { AuditSortDirection } from "../schemas/audit-query";
-import { isLinkableActionId } from "../utils/presentation";
+import { isLinkableActionId, isLinkableRunId } from "../utils/presentation";
 import { EventTypeBadge, OutcomeBadge } from "./audit-badges";
 
 const features = tableFeatures({ rowSortingFeature, rowPaginationFeature });
@@ -43,8 +43,8 @@ export type AuditTableProps = {
 
 /**
  * Event table. All cell content is rendered as React text (never as HTML), and
- * the only link is to an action detail page for a well-formed action id; that
- * page performs its own authorization, so a link is never proof of access.
+ * Links only follow explicit, well-formed action/run references. Destination
+ * pages perform their own authorization; a link is never proof of access.
  */
 export function AuditTable({
   events,
@@ -123,6 +123,30 @@ export function AuditTable({
           },
         }),
         columnHelper.display({
+          id: "run",
+          header: "Run",
+          enableSorting: false,
+          cell: ({ row }) => {
+            const { runId } = row.original;
+            if (runId === null) {
+              return <span className="text-sm text-fg-muted">No associated run</span>;
+            }
+            if (runId === undefined) {
+              return <span className="text-sm text-fg-muted">Run relationship unavailable</span>;
+            }
+            return isLinkableRunId(runId) ? (
+              <Link
+                href={`/runs/${encodeURIComponent(runId)}`}
+                className="font-mono text-sm text-accent underline-offset-2 hover:underline"
+              >
+                {runId}
+              </Link>
+            ) : (
+              <span className="text-sm text-fg-muted">Run relationship unavailable</span>
+            );
+          },
+        }),
+        columnHelper.display({
           id: "details",
           header: () => <span className="sr-only">Details</span>,
           enableSorting: false,
@@ -180,7 +204,7 @@ export function AuditTable({
         className="overflow-x-auto rounded-lg border border-line bg-surface"
       >
         <table
-          className={cn("w-full min-w-[52rem] border-collapse text-left", stale && "opacity-60")}
+          className={cn("w-full min-w-[60rem] border-collapse text-left", stale && "opacity-60")}
           aria-busy={stale || undefined}
         >
           <caption className="sr-only">

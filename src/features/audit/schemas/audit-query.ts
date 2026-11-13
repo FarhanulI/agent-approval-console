@@ -3,6 +3,7 @@ import {
   auditActorTypeSchema,
   auditEventTypeSchema,
   auditOutcomeSchema,
+  auditRunIdSchema,
 } from "./audit-event";
 
 export const MAX_AUDIT_PAGE_SIZE = 100;
@@ -58,6 +59,7 @@ const auditEventQueryInputSchema = z
       .string()
       .regex(/^[A-Za-z0-9_-]{1,64}$/)
       .optional(),
+    runId: auditRunIdSchema.optional(),
     startDate: utcDateTime.optional(),
     endDate: utcDateTime.optional(),
     /** Backward-compatible aliases for the existing audit URL/API contract. */

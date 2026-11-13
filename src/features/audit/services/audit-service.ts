@@ -70,14 +70,24 @@ export function createHttpAuditService(options: HttpAuditServiceOptions = {}): A
   }
 
   return {
-    listEvents(query, { signal } = {}) {
+    async listEvents(query, { signal } = {}) {
       const queryString = serializeAuditEventQuery(query).toString();
-      return getValidated(
+      const response = await getValidated(
         `${baseUrl}/api/audit-events${queryString ? `?${queryString}` : ""}`,
         signal,
         auditEventListResponseDtoSchema,
         false,
       );
+      if (
+        query.runId &&
+        response.items.some((event) => event.runId !== query.runId)
+      ) {
+        throw new ActionsServiceError(
+          "malformed",
+          "The server returned audit events outside the requested run.",
+        );
+      }
+      return response;
     },
 
     async getEvent(eventId, { signal } = {}) {

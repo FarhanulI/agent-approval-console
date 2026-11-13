@@ -141,6 +141,7 @@ export function createMockRunsBackend(): RunsBackend {
     async get(ctx, runId) {
       throwForScenario();
       await applyDelay();
+      if (getRunsScenario().kind === "missing-run-detail") return undefined;
       const record = storedRuns.find(
         (run) => run.detail.id === runId && visible(ctx.principal.tenantIds, run),
       );
