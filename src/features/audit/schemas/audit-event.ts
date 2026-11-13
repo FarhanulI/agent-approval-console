@@ -36,8 +36,11 @@ export const AUDIT_OUTCOMES = [
   "unknown",
 ] as const;
 
+export const AUDIT_ACTOR_TYPES = ["user", "system", "agent"] as const;
+export const auditActorTypeSchema = z.enum(AUDIT_ACTOR_TYPES);
 export const auditEventTypeSchema = z.enum(AUDIT_EVENT_TYPES);
 export const auditOutcomeSchema = z.enum(AUDIT_OUTCOMES);
+export type AuditActorType = z.infer<typeof auditActorTypeSchema>;
 export type AuditEventType = z.infer<typeof auditEventTypeSchema>;
 export type AuditOutcome = z.infer<typeof auditOutcomeSchema>;
 
@@ -64,7 +67,7 @@ export const auditEventDtoSchema = z.strictObject({
   eventType: auditEventTypeSchema,
   outcome: auditOutcomeSchema,
   occurredAt: isoDateTime,
-  actorType: z.enum(["user", "system", "agent"]),
+  actorType: auditActorTypeSchema,
   /** Absent for system events. */
   actorId: z.string().min(1).optional(),
   actionId: z.string().min(1).optional(),

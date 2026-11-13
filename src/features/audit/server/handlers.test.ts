@@ -46,7 +46,15 @@ async function decide(
 }
 
 type Body = {
-  items: { id: string; actionId?: string; outcome: string; eventType: string; occurredAt: string }[];
+  items: {
+    id: string;
+    actionId?: string;
+    actorId?: string;
+    actorType: string;
+    outcome: string;
+    eventType: string;
+    occurredAt: string;
+  }[];
   pagination: { page: number; pageSize: number; total: number };
   error: { code: string };
 };
@@ -123,12 +131,23 @@ describe("audit read API: tenant isolation and browser claims", () => {
     expect((await handleGetAuditEvent(await get(`/api/audit-events/${east.id}`, REVIEWER_BOTH), east.id)).status).toBe(200);
   });
 
-  it("rejects forged tenantId, actorId and role query parameters", async () => {
-    for (const query of ["?tenantId=tenant_east", "?actorId=usr_dev_reviewer", "?role=reviewer"]) {
+  it("rejects tenant and role query parameters but treats actor IDs only as filters", async () => {
+    for (const query of ["?tenantId=tenant_east", "?role=reviewer"]) {
       const { response, body } = await list(query, REVIEWER_MAIN);
       expect(response.status).toBe(400);
       expect(body.error.code).toBe("invalid_query");
     }
+
+    const filtered = await list("?actorId=usr_dev_main_reviewer&pageSize=100", REVIEWER_MAIN);
+    expect(filtered.response.status).toBe(200);
+    expect(filtered.body.items.length).toBeGreaterThan(0);
+    expect(filtered.body.items.every((item) => item.actorId === "usr_dev_main_reviewer")).toBe(true);
+    const mainActionIds = new Set(
+      listMockActions()
+        .filter((action) => action.targetRecord.tenantId === "tenant_main")
+        .map((action) => action.id),
+    );
+    expect(filtered.body.items.every((item) => !item.actionId || mainActionIds.has(item.actionId))).toBe(true);
   });
 
   it("fails closed if a backend returns an event outside the principal's tenants", async () => {
@@ -183,10 +202,57 @@ describe("audit read API: query behavior", () => {
 
     const search = await list("?search=act_0002", REVIEWER_BOTH);
     expect(search.body.items.every((i: { actionId?: string }) => i.actionId === "act_0002")).toBe(true);
+
+    const user = await list(
+      "?actorType=user&userId=usr_dev_reviewer&eventType=decision.accepted&outcome=success&pageSize=100",
+      REVIEWER_BOTH,
+    );
+    expect(user.body.items.length).toBeGreaterThan(0);
+    expect(user.body.items.every((item) =>
+      item.actorType === "user" &&
+      item.actorId === "usr_dev_reviewer" &&
+      item.eventType === "decision.accepted" &&
+      item.outcome === "success",
+    )).toBe(true);
+
+    const agent = await list(
+      "?actorType=agent&agentId=agent_inventory&outcome=rejected&startDate=2026-10-01T00:00:00.000Z&endDate=2026-10-03T23:59:59.999Z&pageSize=100",
+      REVIEWER_BOTH,
+    );
+    expect(agent.body.items.length).toBeGreaterThan(0);
+    expect(agent.body.items.every((item) =>
+      item.actorType === "agent" &&
+      item.actorId === "agent_inventory" &&
+      item.outcome === "rejected" &&
+      Date.parse(item.occurredAt) >= Date.parse("2026-10-01T00:00:00.000Z") &&
+      Date.parse(item.occurredAt) <= Date.parse("2026-10-03T23:59:59.999Z"),
+    )).toBe(true);
+
+    const system = await list("?actorType=system&pageSize=100", REVIEWER_BOTH);
+    expect(system.body.items.length).toBeGreaterThan(0);
+    expect(system.body.items.every((item) => item.actorType === "system")).toBe(true);
+    expect((await list("?systemId=sys_1", REVIEWER_BOTH)).body.pagination.total).toBe(0);
+
+    const secondPage = await list(
+      "?actorType=agent&agentId=agent_inventory&outcome=rejected&pageSize=1&page=2&sortDirection=asc",
+      REVIEWER_BOTH,
+    );
+    expect(secondPage.body.pagination).toMatchObject({ page: 2, pageSize: 1 });
+    expect(secondPage.body.items).toHaveLength(1);
+    expect(secondPage.body.items[0].actorId).toBe("agent_inventory");
   });
 
   it("rejects invalid pagination, sort, filters and date ranges with sanitized errors", async () => {
-    for (const query of ["?page=0", "?pageSize=1000", "?sortBy=actorId", "?eventType=x", "?from=2026-10-02T00:00:00.000Z&to=2026-10-01T00:00:00.000Z"]) {
+    for (const query of [
+      "?page=0",
+      "?pageSize=1000",
+      "?sortBy=actorId",
+      "?eventType=x",
+      "?actorType=not-a-type",
+      "?startDate=2026-02-30T00:00:00.000Z",
+      "?startDate=2026-10-02T00:00:00.000Z&endDate=2026-10-01T00:00:00.000Z",
+      "?from=2026-10-02T00:00:00.000Z&to=2026-10-01T00:00:00.000Z",
+    ]) {
       const { response, body } = await list(query);
       expect(response.status).toBe(400);
       expect(JSON.stringify(body)).not.toMatch(/stack|usr_test|unit-test-secret/);

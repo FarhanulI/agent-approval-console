@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionsServiceError } from "@/features/approvals/services/actions-service-error";
@@ -111,6 +111,53 @@ describe("AuditLog", () => {
     await waitFor(() =>
       expect(service.listEvents).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "unknown", page: 1 }), expect.anything()),
     );
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(urlStore.get()).toBe("");
+  });
+
+  it("composes actor, user, agent, date, and event filters and resets pagination", async () => {
+    const user = userEvent.setup();
+    const service = fakeService();
+    urlStore.set("page=3");
+    renderLog(service);
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+
+    await user.selectOptions(screen.getByLabelText("Actor type"), "agent");
+    expect(urlStore.get()).toBe("actorType=agent");
+    await user.type(screen.getByLabelText("Agent ID"), "agent_inventory");
+    await user.type(screen.getByLabelText("User ID"), "usr_dev_reviewer");
+    await user.selectOptions(screen.getByLabelText("Event type"), "decision.accepted");
+    await user.selectOptions(screen.getByLabelText("Outcome"), "success");
+    fireEvent.change(screen.getByLabelText("From (UTC date)"), {
+      target: { value: "2026-10-01" },
+    });
+    fireEvent.change(screen.getByLabelText("To (UTC date)"), {
+      target: { value: "2026-10-02" },
+    });
+
+    await waitFor(() =>
+      expect(service.listEvents).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          actorType: "agent",
+          agentId: "agent_inventory",
+          userId: "usr_dev_reviewer",
+          eventType: "decision.accepted",
+          outcome: "success",
+          startDate: "2026-10-01T00:00:00.000Z",
+          endDate: "2026-10-02T23:59:59.999Z",
+          page: 1,
+        }),
+        expect.anything(),
+      ),
+    );
+    expect(urlStore.get()).not.toContain("page=3");
+    expect(screen.getByRole("list", { name: "Active filters" }).textContent).toContain(
+      "Agent ID: agent_inventory",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Clear date range" }));
+    expect(urlStore.get()).not.toContain("from=");
+    expect(urlStore.get()).not.toContain("to=");
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(urlStore.get()).toBe("");
   });

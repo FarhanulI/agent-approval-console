@@ -68,25 +68,41 @@ describe("audit query schema", () => {
 
   it("accepts supported filters and coerces paging", () => {
     const result = parse(
-      "page=2&pageSize=25&sortBy=occurredAt&sortDirection=asc&eventType=decision.denied&outcome=unknown&actionId=act_0001&from=2026-10-01T00:00:00.000Z&to=2026-10-02T00:00:00.000Z&search=abc",
+      "page=2&pageSize=25&sortBy=occurredAt&sortDirection=asc&actorId=usr_1&actorType=user&userId=usr_1&systemId=sys_1&agentId=agent_1&eventType=decision.denied&outcome=unknown&actionId=act_0001&startDate=2026-10-01T00:00:00.000Z&endDate=2026-10-02T00:00:00.000Z&search=abc",
     );
     expect(result.success).toBe(true);
-    expect(result.data).toMatchObject({ page: 2, pageSize: 25, sortDirection: "asc" });
+    expect(result.data).toMatchObject({
+      page: 2,
+      pageSize: 25,
+      sortDirection: "asc",
+      actorId: "usr_1",
+      actorType: "user",
+      userId: "usr_1",
+      systemId: "sys_1",
+      agentId: "agent_1",
+      startDate: "2026-10-01T00:00:00.000Z",
+      endDate: "2026-10-02T00:00:00.000Z",
+    });
   });
 
   it.each([
     "tenantId=tenant_east",
-    "actorId=usr_1",
     "role=reviewer",
     "page=0",
     "pageSize=101",
     "pageSize=abc",
     "sortBy=summary",
     "sortDirection=up",
+    "actorType=robot",
+    "actorId=%20usr_1",
+    "agentId=" + "a".repeat(129),
     "eventType=nope",
     "outcome=nope",
     "actionId=../etc",
     "from=2026-10-02T00:00:00.000Z&to=2026-10-01T00:00:00.000Z",
+    "startDate=2026-10-02T00:00:00.000Z&endDate=2026-10-01T00:00:00.000Z",
+    "startDate=2026-02-30T00:00:00.000Z",
+    "startDate=2026-10-01T00:00:00.000Z&from=2026-10-01T00:00:00.000Z",
     "from=2020-01-01T00:00:00.000Z&to=2026-01-01T00:00:00.000Z",
     "from=not-a-date",
     `search=${"a".repeat(201)}`,
@@ -96,5 +112,18 @@ describe("audit query schema", () => {
 
   it("treats empty values as not provided", () => {
     expect(parse("outcome=&search=").success).toBe(true);
+  });
+
+  it("normalizes the legacy from/to aliases to UTC startDate/endDate", () => {
+    const result = parse("from=2026-10-01T00:00:00.000Z&to=2026-10-02T23:59:59.999Z");
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      startDate: "2026-10-01T00:00:00.000Z",
+      endDate: "2026-10-02T23:59:59.999Z",
+    });
+    if (result.success) {
+      expect(result.data).not.toHaveProperty("from");
+      expect(result.data).not.toHaveProperty("to");
+    }
   });
 });

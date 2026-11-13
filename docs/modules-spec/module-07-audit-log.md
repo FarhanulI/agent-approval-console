@@ -48,7 +48,7 @@ Why no event for 401/CSRF/cross-tenant: the tenant is unknown or belongs to some
 
 ## 4. API (proposed, read-only, BFF)
 
-- `GET /api/audit-events`: strict Zod query: `page`, `pageSize` ≤ 100, `sortBy=occurredAt`, `sortDirection`, `eventType`, `outcome`, `actionId`, `from`/`to` (UTC instants, `from ≤ to`, ≤ 366 days), `search` (≤ 200; matches summary and action id only). Unknown keys (`tenantId`, `actorId`, `role`, …) → 400. Response `{ items: AuditEventDto[], pagination }`.
+- `GET /api/audit-events`: strict Zod query: `page`, `pageSize` ≤ 100, `sortBy=occurredAt`, `sortDirection`, `actorId`, `actorType`, `userId`, `systemId`, `agentId`, `eventType`, `outcome`, `actionId`, `startDate`/`endDate` (UTC instants, ordered, ≤ 366 days; legacy `from`/`to` aliases are accepted), `search` (≤ 200; matches summary and action id only). Actor IDs are filters, never authorization claims. Unknown keys (`tenantId`, `role`, …) → 400. Response `{ items: AuditEventDto[], pagination }`.
 - `GET /api/audit-events/:eventId`: one event; missing and cross-tenant events return the same 404.
 - Pipeline: session (401) → `audit:view` (403) → validation (400) → backend scoped by the session's tenants → defensive tenant check (502, fail closed) → DTO mapping. `no-store`, `x-request-id`, existing error envelope. Backend failure → sanitized 502/504; bridge → 503 `audit_unavailable`.
 - Only `GET` is exported; there is no write/update/delete endpoint.
@@ -56,7 +56,7 @@ Why no event for 401/CSRF/cross-tenant: the tenant is unknown or belongs to some
 
 ## 5. UI (`/audit`)
 
-TanStack Table (manual sort/pagination), URL state (`q`, `type`, `outcome`, `from`, `to`, `sort`, `page`; any change but `page` resets to 1), date inputs are UTC days. States: loading, initial empty, no results (with clear filters), error + retry (with request id), stale rows, background refetch notice, refresh-failed banner, out-of-range page fallback. Rows show UTC time, type/outcome badges, summary, actor, action link (only for well-formed ids; the action page authorizes again), and a Details dialog backed by the detail endpoint. All strings render as text; no raw JSON.
+TanStack Table (manual sort/pagination), URL state (`q`, `type`, `outcome`, `actorId`, `actorType`, `userId`, `systemId`, `agentId`, `from`, `to`, `sort`, `page`; any change but `page` resets to 1), date inputs are UTC days. States: loading, initial empty, no results (with clear filters), error + retry (with request id), stale rows, background refetch notice, refresh-failed banner, out-of-range page fallback. Rows show UTC time, type/outcome badges, summary, actor, action link (only for well-formed ids; the action page authorizes again), and a Details dialog backed by the detail endpoint. All strings render as text; no raw JSON.
 
 ## 6. Contract evidence required before enabling the real bridge
 
@@ -81,3 +81,10 @@ Cannot be verified without a real backend: durability, immutability, atomicity, 
 ## 8. Verification
 
 `npm run lint`, `npm run typecheck`, `npm test`, `NEXT_PUBLIC_API_MOCKING=enabled npm run build`, `E2E_SERVER=start npx playwright test`.
+
+## 9. Module 11C — Audit Search Enhancement
+
+- Server-side filters: generic `actorId` and `actorType`; category-specific `userId`, `systemId`, `agentId`; existing `eventType`, `outcome`, `actionId`, UTC `startDate`/`endDate`, and summary/action-ID `search`. Filters compose before pagination and sorting. The API normalizes legacy `from`/`to` names to `startDate`/`endDate`; the browser keeps its existing shareable `from`/`to` URLs.
+- Actor taxonomy and event/outcome values remain the existing internal enums. No separate user catalog exists, so user filtering is by ID text rather than a fabricated searchable selector. System records without `actorId` remain filterable by `actorType=system`, but cannot match a specific `systemId`; no system identity is synthesized.
+- Agent actor fixtures use the existing fictional action-agent identifiers, only in the mock seed. They do not establish attribution from an action or run in a real backend. Existing audit records still have no direct `runId` relationship, so no run navigation/filtering was added.
+- The mock BFF backend applies each filter before sorting and pagination. Real bridge behavior remains unverified and unchanged (`503 audit_unavailable`). Tenant scoping continues to come solely from the authenticated principal; client-supplied tenant/role keys remain invalid, and tenant IDs remain absent from browser DTOs.

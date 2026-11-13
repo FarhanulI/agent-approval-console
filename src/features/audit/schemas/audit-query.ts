@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { auditEventTypeSchema, auditOutcomeSchema } from "./audit-event";
+import {
+  auditActorTypeSchema,
+  auditEventTypeSchema,
+  auditOutcomeSchema,
+} from "./audit-event";
 
 export const MAX_AUDIT_PAGE_SIZE = 100;
 export const MAX_AUDIT_SEARCH_LENGTH = 200;
@@ -13,41 +17,87 @@ const utcDateTime = z
   .string()
   .max(40)
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$/, "Use an ISO 8601 UTC timestamp ending in Z.")
-  .refine((value) => !Number.isNaN(Date.parse(value)), "Invalid date.");
+  .refine((value) => {
+    const match =
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?Z$/.exec(value);
+    if (!match) return false;
+    const [, year, month, day, hour, minute, second = "0"] = match;
+    const timestamp = Date.parse(value);
+    if (Number.isNaN(timestamp)) return false;
+    const parsed = new Date(timestamp);
+    return (
+      parsed.getUTCFullYear() === Number(year) &&
+      parsed.getUTCMonth() + 1 === Number(month) &&
+      parsed.getUTCDate() === Number(day) &&
+      parsed.getUTCHours() === Number(hour) &&
+      parsed.getUTCMinutes() === Number(minute) &&
+      parsed.getUTCSeconds() === Number(second)
+    );
+  }, "Invalid date.");
 
-/**
- * Wire-level query of `GET /api/audit-events` (proposed). Strict: unknown keys
- * such as `tenantId`, `actorId` or `role` are rejected, so the browser cannot
- * even attempt to steer tenant scope. Dates are UTC instants. Only `occurredAt`
- * is sortable. `search` matches the event summary and action id only.
- */
-export const auditEventQuerySchema = z
+export const auditIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((value) => value.trim() === value, "Identifiers cannot have surrounding whitespace.");
+
+const auditEventQueryInputSchema = z
   .strictObject({
     page: z.coerce.number().int().min(1).max(100_000).optional(),
     pageSize: z.coerce.number().int().min(1).max(MAX_AUDIT_PAGE_SIZE).optional(),
     sortBy: z.enum(["occurredAt"]).optional(),
     sortDirection: z.enum(AUDIT_SORT_DIRECTIONS).optional(),
+    actorId: auditIdentifierSchema.optional(),
+    actorType: auditActorTypeSchema.optional(),
+    userId: auditIdentifierSchema.optional(),
+    systemId: auditIdentifierSchema.optional(),
+    agentId: auditIdentifierSchema.optional(),
     eventType: auditEventTypeSchema.optional(),
     outcome: auditOutcomeSchema.optional(),
     actionId: z
       .string()
       .regex(/^[A-Za-z0-9_-]{1,64}$/)
       .optional(),
+    startDate: utcDateTime.optional(),
+    endDate: utcDateTime.optional(),
+    /** Backward-compatible aliases for the existing audit URL/API contract. */
     from: utcDateTime.optional(),
     to: utcDateTime.optional(),
     search: z.string().max(MAX_AUDIT_SEARCH_LENGTH).optional(),
   })
-  .refine((q) => !q.from || !q.to || Date.parse(q.from) <= Date.parse(q.to), {
-    message: "`from` must not be after `to`.",
-    path: ["from"],
-  })
-  .refine(
-    (q) =>
-      !q.from ||
-      !q.to ||
-      Date.parse(q.to) - Date.parse(q.from) <= MAX_AUDIT_RANGE_DAYS * 86_400_000,
-    { message: "The date range is too large.", path: ["to"] },
-  );
+  .superRefine((query, context) => {
+    if (query.startDate && query.from) {
+      context.addIssue({ code: "custom", message: "Use either `startDate` or `from`, not both.", path: ["startDate"] });
+    }
+    if (query.endDate && query.to) {
+      context.addIssue({ code: "custom", message: "Use either `endDate` or `to`, not both.", path: ["endDate"] });
+    }
+
+    const startDate = query.startDate ?? query.from;
+    const endDate = query.endDate ?? query.to;
+    if (!startDate || !endDate) return;
+    if (Date.parse(startDate) > Date.parse(endDate)) {
+      context.addIssue({ code: "custom", message: "`startDate` must not be after `endDate`.", path: ["startDate"] });
+      return;
+    }
+    if (Date.parse(endDate) - Date.parse(startDate) > MAX_AUDIT_RANGE_DAYS * 86_400_000) {
+      context.addIssue({ code: "custom", message: "The date range is too large.", path: ["endDate"] });
+    }
+  });
+
+/**
+ * Internal BFF query. Actor identifiers are filters only, never authorization
+ * claims; tenant scope always comes from the authenticated server principal.
+ * Legacy `from`/`to` inputs are normalized to the UTC `startDate`/`endDate`.
+ * Only `occurredAt` is sortable; search matches summary and action ID.
+ */
+export const auditEventQuerySchema = auditEventQueryInputSchema.transform(
+  ({ from, to, startDate, endDate, ...query }) => ({
+    ...query,
+    ...(startDate ?? from ? { startDate: startDate ?? from } : {}),
+    ...(endDate ?? to ? { endDate: endDate ?? to } : {}),
+  }),
+);
 
 export type AuditEventQuery = z.infer<typeof auditEventQuerySchema>;
 

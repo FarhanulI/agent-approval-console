@@ -21,13 +21,20 @@ export const SEED_AUDIT_EVENTS: readonly AuditEventRecord[] = actionFixtures
   .map((action, index) => {
     const template = TEMPLATES[index % TEMPLATES.length]!;
     const isSystem = index % 7 === 6;
+    const isAgent = !isSystem && index % 4 === 2;
     return {
       id: `evt_seed_${String(index + 1).padStart(4, "0")}`,
       tenantId: action.targetRecord.tenantId ?? "tenant_main",
       ...template,
       occurredAt: new Date(BASE + index * STEP_MS).toISOString(),
-      actorType: isSystem ? "system" : "user",
-      actorId: isSystem ? undefined : index % 2 === 0 ? "usr_dev_reviewer" : "usr_dev_main_reviewer",
+      actorType: isSystem ? "system" : isAgent ? "agent" : "user",
+      actorId: isSystem
+        ? undefined
+        : isAgent
+          ? action.agent?.id
+          : index % 2 === 0
+            ? "usr_dev_reviewer"
+            : "usr_dev_main_reviewer",
       actionId: action.id,
       requestId: `req_seed_${String(index + 1).padStart(4, "0")}`,
       details:

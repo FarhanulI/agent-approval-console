@@ -20,8 +20,18 @@ describe("audit service", () => {
   it("serializes the query and validates the response", async () => {
     const fetchFn = vi.fn<Fetch>(async () => Response.json(page));
     const service = createHttpAuditService({ fetchFn });
-    const result = await service.listEvents({ page: 2, outcome: "unknown", search: "a b" });
-    expect(fetchFn.mock.calls[0]![0]).toBe("/api/audit-events?page=2&outcome=unknown&search=a+b");
+    const result = await service.listEvents({
+      page: 2,
+      actorType: "agent",
+      agentId: "agent_inventory",
+      outcome: "unknown",
+      startDate: "2026-10-01T00:00:00.000Z",
+      endDate: "2026-10-02T23:59:59.999Z",
+      search: "a b",
+    });
+    expect(fetchFn.mock.calls[0]![0]).toBe(
+      "/api/audit-events?page=2&actorType=agent&agentId=agent_inventory&outcome=unknown&startDate=2026-10-01T00%3A00%3A00.000Z&endDate=2026-10-02T23%3A59%3A59.999Z&search=a+b",
+    );
     expect(result.items[0]!.outcome).toBe("success");
   });
 

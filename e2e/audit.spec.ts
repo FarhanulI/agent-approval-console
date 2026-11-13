@@ -45,6 +45,54 @@ test.describe("audit log", () => {
     await expect(rows(page).filter({ hasNotText: "Oct 1, 2026" })).toHaveCount(0);
   });
 
+  test("combines actor, identity, event, outcome, search, and date filters", async ({ page }) => {
+    await page.goto("/audit");
+    await expect(rows(page)).toHaveCount(10);
+
+    await page.getByLabel("Search events").fill("Decision denied");
+    await expect(page).toHaveURL(/q=Decision\+denied/);
+    await page.getByLabel("Actor type").selectOption("agent");
+    await page.getByLabel("Agent ID").fill("agent_inventory");
+    await page.getByLabel("Event type").selectOption("decision.denied");
+    await page.getByLabel("Outcome").selectOption("rejected");
+    await page.getByLabel("From (UTC date)").fill("2026-10-01");
+    await page.getByLabel("To (UTC date)").fill("2026-10-04");
+
+    await expect(page).toHaveURL(/actorType=agent/);
+    await expect(page).toHaveURL(/agentId=agent_inventory/);
+    await expect(page).toHaveURL(/type=decision\.denied/);
+    await expect(page).toHaveURL(/outcome=rejected/);
+    await expect(page).toHaveURL(/from=2026-10-01/);
+    await expect(page).toHaveURL(/to=2026-10-04/);
+    await expect(rows(page)).toHaveCount(1);
+    await expect(rows(page).first()).toContainText("agent_inventory");
+    await expect(rows(page).first()).toContainText("Rejected");
+    await expect(rows(page).first()).toContainText("Decision denied");
+
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await expect(page).toHaveURL(/\/audit$/);
+    await expect(rows(page)).toHaveCount(10);
+  });
+
+  test("filters users and handles system events without an attributed system ID", async ({ page }) => {
+    await page.goto("/audit");
+    await page.getByLabel("Actor type").selectOption("user");
+    await page.getByLabel("User ID").fill("usr_dev_reviewer");
+    await expect(page).toHaveURL(/userId=usr_dev_reviewer/);
+    await expect(rows(page).first()).toBeVisible();
+    await expect(rows(page).filter({ hasNotText: "usr_dev_reviewer" })).toHaveCount(0);
+    await expect(rows(page).filter({ hasNotText: "user" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await page.getByLabel("Actor type").selectOption("system");
+    await expect(rows(page).first()).toBeVisible();
+    await expect(rows(page).filter({ hasNotText: "system" })).toHaveCount(0);
+
+    await page.getByLabel("System ID").fill("system_mock");
+    await expect(page.getByText("No events match the current criteria")).toBeVisible();
+    await expect(page).toHaveURL(/systemId=system_mock/);
+  });
+
   test("shows an error with retry, then recovers", async ({ page }) => {
     await mockControl(page.context().request, "audit", { kind: "server-error" });
     await page.goto("/audit");

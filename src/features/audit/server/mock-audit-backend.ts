@@ -31,8 +31,8 @@ export function createMockAuditBackend(): AuditBackend {
       }
 
       const term = query.search?.trim().toLowerCase();
-      const from = query.from ? Date.parse(query.from) : undefined;
-      const to = query.to ? Date.parse(query.to) : undefined;
+      const startDate = query.startDate ? Date.parse(query.startDate) : undefined;
+      const endDate = query.endDate ? Date.parse(query.endDate) : undefined;
       const direction = query.sortDirection === "asc" ? 1 : -1;
 
       const matches =
@@ -42,11 +42,19 @@ export function createMockAuditBackend(): AuditBackend {
               const at = Date.parse(event.occurredAt);
               return (
                 inTenants(ctx.principal.tenantIds, event.tenantId) &&
-                (!query.eventType || event.eventType === query.eventType) &&
-                (!query.outcome || event.outcome === query.outcome) &&
-                (!query.actionId || event.actionId === query.actionId) &&
-                (from === undefined || at >= from) &&
-                (to === undefined || at <= to) &&
+                  (!query.actorId || event.actorId === query.actorId) &&
+                  (!query.actorType || event.actorType === query.actorType) &&
+                  (!query.userId ||
+                    (event.actorType === "user" && event.actorId === query.userId)) &&
+                  (!query.systemId ||
+                    (event.actorType === "system" && event.actorId === query.systemId)) &&
+                  (!query.agentId ||
+                    (event.actorType === "agent" && event.actorId === query.agentId)) &&
+                  (!query.eventType || event.eventType === query.eventType) &&
+                  (!query.outcome || event.outcome === query.outcome) &&
+                  (!query.actionId || event.actionId === query.actionId) &&
+                  (startDate === undefined || at >= startDate) &&
+                  (endDate === undefined || at <= endDate) &&
                 (!term ||
                   event.summary.toLowerCase().includes(term) ||
                   (event.actionId?.toLowerCase().includes(term) ?? false))
