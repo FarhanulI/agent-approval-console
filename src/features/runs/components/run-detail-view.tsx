@@ -51,7 +51,7 @@ export function RunDetailView({
 }) {
   const result = useRunQuery(runId, service);
   const run = result.data;
-  const streamStatus = useRunEvents(run, service);
+  const stream = useRunEvents(run, service);
 
   if (result.isError && !run) {
     const error = result.error;
@@ -111,7 +111,11 @@ export function RunDetailView({
       ) : null}
 
       <RunOverview run={run} />
-      <ConnectionNotice status={streamStatus} onRefresh={() => void result.refetch()} />
+      <ConnectionNotice
+        status={stream.status}
+        onRefresh={() => void result.refetch()}
+        onRetry={stream.retry}
+      />
       {run.status === "waiting" ? <ApprovalNotice run={run} /> : null}
       <RunTimeline run={run} />
       <RunAuditEvents
@@ -331,13 +335,20 @@ function OverviewField({ label, value }: { label: string; value: string }) {
 function ConnectionNotice({
   status,
   onRefresh,
+  onRetry,
 }: {
-  status: ReturnType<typeof useRunEvents>;
+  status: ReturnType<typeof useRunEvents>["status"];
   onRefresh: () => void;
+  onRetry: () => void;
 }) {
   const message: Record<typeof status, string> = {
     connected: "Live updates connected.",
     reconnecting: "Connection interrupted. Reconnecting and reconciling the run snapshot…",
+    recovering: "Recovering the run from its latest snapshot…",
+    "recovery-incomplete":
+      "Run recovery is incomplete. Some event history may be missing; the run snapshot is retained.",
+    "history-unavailable":
+      "Event history is unavailable. The latest run snapshot is shown without inventing missing events.",
     disconnected: "Live updates are disconnected. The last run snapshot is still available.",
     connecting: "Connecting to live updates…",
     inactive: "This run is not active. The displayed timeline is a run snapshot.",
@@ -349,6 +360,13 @@ function ConnectionNotice({
       className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface px-4 py-3 text-sm text-fg-muted"
     >
       <span>{message[status]}</span>
+      {status === "disconnected" ||
+      status === "recovery-incomplete" ||
+      status === "history-unavailable" ? (
+        <Button size="sm" variant="secondary" onClick={onRetry}>
+          Retry recovery
+        </Button>
+      ) : null}
       {status === "disconnected" ? (
         <Button size="sm" variant="secondary" onClick={onRefresh}>
           Refresh snapshot

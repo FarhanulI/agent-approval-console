@@ -1,27 +1,41 @@
 import type { RunStatus } from "@/features/approvals/contracts";
-import type { RunEvent } from "../schemas/run";
+import type { RunDetail, RunEvent } from "../schemas/run";
 import type { MergeRunEventsResult } from "../types";
 
-/**
- * Merges event history by sequence, dropping repeated IDs and sequence
- * numbers. Event state never replaces the authoritative run snapshot.
- */
 export function mergeRunEvents(
   current: readonly RunEvent[],
   incoming: RunEvent,
+  runId = current[0]?.runId ?? incoming.runId,
 ): MergeRunEventsResult {
+  const scopedEvents = current.filter((event) => event.runId === runId);
   if (
-    current.some(
+    incoming.runId !== runId ||
+    scopedEvents.some(
       (event) => event.id === incoming.id || event.sequence === incoming.sequence,
     )
   ) {
-    return { events: [...current], hasGap: hasRunEventGap(current) };
+    return {
+      events: [...scopedEvents],
+      hasGap: hasRunEventGap(scopedEvents),
+      added: false,
+    };
   }
 
-  const events = [...current, incoming].sort(
+  const events = [...scopedEvents, incoming].sort(
     (left, right) => left.sequence - right.sequence,
   );
-  return { events, hasGap: hasRunEventGap(events) };
+  return { events, hasGap: hasRunEventGap(events), added: true };
+}
+
+export function mergeRunEventHistory(
+  current: readonly RunEvent[],
+  incoming: readonly RunEvent[],
+  runId: string,
+): RunEvent[] {
+  return [...current, ...incoming].reduce<RunEvent[]>(
+    (events, event) => mergeRunEvents(events, event, runId).events,
+    [],
+  );
 }
 
 export function hasRunEventGap(events: readonly RunEvent[]): boolean {
@@ -42,4 +56,20 @@ const transitions: Record<RunStatus, readonly RunStatus[]> = {
 
 export function canTransitionRunStatus(from: RunStatus, to: RunStatus): boolean {
   return from === to || (transitions[from]?.includes(to) ?? false);
+}
+
+export function reconcileRunSnapshot(
+  current: RunDetail,
+  snapshot: RunDetail,
+): RunDetail {
+  if (current.id !== snapshot.id) {
+    throw new Error("Cannot reconcile snapshots for different runs.");
+  }
+
+  const events = mergeRunEventHistory(current.events, snapshot.events, current.id);
+  if (!canTransitionRunStatus(current.status, snapshot.status)) {
+    return { ...current, events };
+  }
+
+  return { ...snapshot, events };
 }

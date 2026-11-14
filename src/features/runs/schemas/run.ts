@@ -48,6 +48,11 @@ export const runEventSchema = z.strictObject({
   payload: runEventPayloadSchema.optional(),
 });
 
+export const runStreamRecoverySchema = z.strictObject({
+  runId: opaqueIdSchema,
+  reason: z.enum(["cursor-expired", "history-unavailable"]),
+});
+
 export const runStepSchema = z.strictObject({
   id: z.string().min(1).max(64),
   title: z.string().min(1).max(120),
@@ -79,6 +84,16 @@ export const runDetailSchema = runSummarySchema.extend({
   events: z.array(runEventSchema),
   resultSummary: z.string().max(500).optional(),
   errorSummary: z.string().max(500).optional(),
+}).superRefine((run, context) => {
+  for (const [index, event] of run.events.entries()) {
+    if (event.runId !== run.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Run events must belong to their parent run.",
+        path: ["events", index, "runId"],
+      });
+    }
+  }
 });
 
 export const runListResponseSchema = z.strictObject({
@@ -93,6 +108,7 @@ export type RunStepStatus = z.infer<typeof runStepStatusSchema>;
 export type RunEventType = z.infer<typeof runEventTypeSchema>;
 export type RunEventPayload = z.infer<typeof runEventPayloadSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
+export type RunStreamRecovery = z.infer<typeof runStreamRecoverySchema>;
 export type RunStep = z.infer<typeof runStepSchema>;
 export type RunSummary = z.infer<typeof runSummarySchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;

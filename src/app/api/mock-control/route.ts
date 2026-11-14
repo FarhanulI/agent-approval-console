@@ -22,7 +22,7 @@ import {
   type AuditScenario,
   type DecisionScenario,
   type DetailScenario,
-  type RunsScenario,
+  runsScenarioSchema,
 } from "@/mocks/scenarios";
 
 const bodySchema = z.strictObject({
@@ -64,6 +64,14 @@ export async function POST(request: Request) {
   if (!parsed.success) return errorResponse(400, "invalid_request", "Invalid control request.", requestId);
 
   const { target, scenario } = parsed.data;
+  const parsedRunsScenario =
+    target === "runs" && scenario
+      ? runsScenarioSchema.safeParse(scenario)
+      : undefined;
+  if (parsedRunsScenario && !parsedRunsScenario.success) {
+    return errorResponse(400, "invalid_request", "Invalid control request.", requestId);
+  }
+
   if (target === "reset") {
     resetAllScenarios();
     resetMockActionState();
@@ -74,7 +82,9 @@ export async function POST(request: Request) {
     if (target === "actions") setActionsScenario(scenario as ActionsScenario);
     if (target === "detail") setDetailScenario(scenario as DetailScenario);
     if (target === "decision") setDecisionScenario(scenario as DecisionScenario);
-    if (target === "runs") setRunsScenario(scenario as RunsScenario);
+    if (target === "runs" && parsedRunsScenario?.success) {
+      setRunsScenario(parsedRunsScenario.data);
+    }
   }
   return jsonResponse({ ok: true }, requestId);
 }

@@ -1,12 +1,19 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { getMockAction } from "@/mocks/action-store";
 import { runFixtures } from "@/mocks/fixtures/runs";
-import { getRunsScenario } from "@/mocks/scenarios";
+import {
+  consumeExpiredRunCursor,
+  consumeRunSnapshotFailure,
+  getRunsScenario,
+  hasRunStreamDisconnected,
+  markRunRecoveryRequested,
+} from "@/mocks/scenarios";
 import { BackendError } from "@/features/approvals/server/actions-backend";
 import { runDetailSchema, runEventSchema } from "../schemas/run";
 import type { RunListEntry, RunsBackend, StoredRun } from "./runs-backend";
 
 const APPROVAL_TIME = "2026-10-20T09:10:00.000Z";
+const COMPLETION_TIME = "2026-10-20T09:20:00.000Z";
 
 const storedRuns: readonly StoredRun[] = runFixtures.map((detail) => ({
   tenantId: detail.id === "run_0100" || detail.id === "run_0101" || detail.id === "run_0103"
@@ -19,10 +26,23 @@ function visible(ctxTenants: readonly string[], run: StoredRun): boolean {
   return ctxTenants.includes(run.tenantId);
 }
 
-function throwForScenario(): void {
+function throwForScenario(snapshotRead = false): void {
   const scenario = getRunsScenario();
   if (scenario.kind === "server-error") {
     throw new BackendError("upstream-error", "Mock run backend failure.");
+  }
+  if (snapshotRead && scenario.kind === "snapshot-failure") {
+    throw new BackendError("timeout", "Mock run snapshot timed out.");
+  }
+  if (
+    snapshotRead &&
+    scenario.kind === "snapshot-failure-on-recovery" &&
+    consumeRunSnapshotFailure()
+  ) {
+    throw new BackendError("timeout", "Mock run snapshot timed out.");
+  }
+  if (snapshotRead && scenario.kind === "snapshot-unavailable") {
+    throw new BackendError("unavailable", "Mock run snapshot is unavailable.");
   }
 }
 
@@ -35,6 +55,36 @@ async function applyDelay(): Promise<void> {
 
 function detailFor(record: StoredRun) {
   const base = record.detail;
+  const scenario = getRunsScenario();
+  if (
+    scenario.kind === "run-completes-during-disconnect" &&
+    hasRunStreamDisconnected() &&
+    base.id === "run_0101" &&
+    base.status === "running"
+  ) {
+    const completionEvent = runEventSchema.parse({
+      id: `${base.id}_event_005`,
+      runId: base.id,
+      sequence: 5,
+      type: "run.completed",
+      timestamp: COMPLETION_TIME,
+      payload: { message: "Run completed while its stream was disconnected." },
+    });
+    return runDetailSchema.parse({
+      ...base,
+      status: "completed",
+      completedAt: COMPLETION_TIME,
+      currentStep: undefined,
+      steps: base.steps.map((step) =>
+        step.status === "running"
+          ? { ...step, status: "completed", completedAt: COMPLETION_TIME }
+          : step,
+      ),
+      events: [...base.events, completionEvent],
+      resultSummary: "The mock run completed while its event stream was disconnected.",
+    });
+  }
+
   const actionId = base.actionIds[0];
   const action = actionId ? getMockAction(actionId) : undefined;
   if (base.status !== "waiting" || !action || action.status === "pending") {
@@ -139,7 +189,7 @@ export function createMockRunsBackend(): RunsBackend {
     },
 
     async get(ctx, runId) {
-      throwForScenario();
+      throwForScenario(true);
       await applyDelay();
       if (getRunsScenario().kind === "missing-run-detail") return undefined;
       const record = storedRuns.find(
@@ -155,21 +205,55 @@ export function createMockRunsBackend(): RunsBackend {
         (run) => run.detail.id === runId && visible(ctx.principal.tenantIds, run),
       );
       if (!record) return undefined;
-      const run = detailFor(record);
       const scenario = getRunsScenario();
-      let events = run.events;
-      if (scenario.kind === "duplicate-events" && events.length > 0) {
-        events = [...events, events[Math.min(1, events.length - 1)]];
-      } else if (scenario.kind === "out-of-order-events") {
-        events = [...events].reverse();
+      if (scenario.kind === "history-unavailable") {
+        return { tenantId: record.tenantId, history: "unavailable" };
+      }
+      if (
+        scenario.kind === "process-restart-history-unavailable" &&
+        hasRunStreamDisconnected()
+      ) {
+        return { tenantId: record.tenantId, history: "unavailable" };
       }
 
-      const lastIndex = lastEventId
+      const events = detailFor(record).events;
+      const cursorIndex = lastEventId
         ? events.findIndex((event) => event.id === lastEventId)
         : -1;
+      const cursorExpired =
+        (lastEventId && cursorIndex < 0) ||
+        (scenario.kind === "expired-cursor" &&
+          Boolean(lastEventId) &&
+          consumeExpiredRunCursor()) ||
+        (scenario.kind === "snapshot-failure" && Boolean(lastEventId));
+      const recoverySnapshotFailure =
+        scenario.kind === "snapshot-failure-on-recovery" && Boolean(lastEventId);
+      if (cursorExpired || recoverySnapshotFailure) {
+        if (recoverySnapshotFailure) markRunRecoveryRequested();
+        return { tenantId: record.tenantId, history: "cursor-expired" };
+      }
+
+      let replay = cursorIndex >= 0 ? events.slice(cursorIndex + 1) : [...events];
+      if (scenario.kind === "duplicate-events" && events.length > 0) {
+        replay = [...replay, events[Math.min(1, events.length - 1)]];
+      } else if (scenario.kind === "out-of-order-events") {
+        replay = [...replay].reverse();
+      } else if (scenario.kind === "late-events" && replay.length > 2) {
+        replay = [...replay.slice(0, 1), ...replay.slice(2), replay[1]];
+      } else if (scenario.kind === "event-gap" && replay.length > 2) {
+        replay = replay.filter((event) => event.sequence !== 3);
+      }
+
       return {
         tenantId: record.tenantId,
-        events: lastIndex >= 0 ? events.slice(lastIndex + 1) : events,
+        history: "available",
+        events: replay,
+        ...(scenario.kind === "expired-cursor" && !lastEventId
+          ? { closeAfterEvents: true }
+          : {}),
+        ...(scenario.kind === "snapshot-failure-on-recovery" && !lastEventId
+          ? { closeAfterEvents: true }
+          : {}),
       };
     },
   };

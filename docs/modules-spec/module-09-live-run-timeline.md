@@ -41,16 +41,17 @@ The run HTTP service validates JSON snapshots and SSE event data with Zod. UI co
 
 Fixtures cover running, waiting-for-approval, completed, failed and cancelled runs. A mock SSE connection emits the fixture's ordered events, includes sequence/event IDs, and sends keepalives while the client remains subscribed. The browser uses the same service subscription interface intended for a later SSE adapter. Native `EventSource` uses same-origin session cookies; cleanup closes the source when the run changes or the view unmounts.
 
-Development/test mock controls include empty and server-error reads, malformed payloads, delayed events, duplicate events, out-of-order events, and a one-time disconnect. The disconnect scenario exercises EventSource reconnection; on a subsequent connection the UI refetches the authoritative run snapshot. When an approval decision changes the linked mock action, a fresh run snapshot exposes `approval.resolved` and either a running execution phase or a rejected terminal state.
+Development/test mock controls include empty and server-error reads, malformed payloads, delayed events, duplicate/out-of-order/late events, sequence gaps, one-time disconnects, expired cursors, unavailable history, process-restart simulations, completion during a disconnect, and snapshot recovery failures. Recovery controls are available only through the authenticated mock-control route and are simulations, not bridge guarantees.
 
 ## Ordering and recovery
 
-- Events are ordered by `sequence`, not timestamps.
-- The client drops duplicate event IDs and duplicate sequence numbers.
-- A sequence gap triggers a fresh snapshot query.
-- Event messages update the visible event history only; they do not overwrite run status or summary fields.
-- EventSource reconnection triggers snapshot reconciliation. `Last-Event-ID` allows the mock adapter to continue after the last known event when that ID is still in the fixture history.
-- The run snapshot is authoritative. The mock store is in-memory and does not provide durable replay, exactly-once delivery, or recovery after process restart.
+- Events are ordered by the contract's positive integer `sequence`, never by timestamps or assumptions about event ID ordering.
+- Event ingestion is scoped to the run and idempotent by event ID and sequence. A fresh subscription carries the last accepted opaque cursor; native EventSource reconnects continue to use `Last-Event-ID`.
+- An unknown/expired cursor produces an explicit `run-recovery` control event instead of silently replaying from the beginning. The client closes that source, validates and reconciles a fresh run snapshot, then resumes from the snapshot's last known event cursor when replay is available.
+- A sequence gap triggers snapshot reconciliation. Known events from the local timeline and the snapshot are merged and deduplicated; missing history is never fabricated. If a gap remains, the UI reports incomplete recovery. A later event can fill the gap.
+- Event messages update timeline history only; they do not overwrite run status or summary fields. The snapshot is authoritative, and illegal/stale lifecycle transitions cannot regress a cached terminal run.
+- The mock stream's retry delay is 250 ms and a subscription stops after five reconnect errors. Retry creates a fresh subscription only after snapshot reconciliation. Cleanup closes the EventSource and aborts in-flight snapshot reads.
+- The mock store is in-memory and does not provide durable replay, exactly-once delivery, or real process-restart recovery. Mock restart scenarios model interruption and replay availability only.
 
 ## Approval integration
 
@@ -58,20 +59,20 @@ The waiting run highlights the pending approval and links to the authorized Acti
 
 ## UI states
 
-The list and detail views handle initial loading, empty results, no search matches, request errors with retry, stale snapshots, not-found runs, reconnecting/disconnected/connected transport states, waiting approval, and completed/failed/cancelled outcomes. The timeline is a semantic ordered list, and connection status is announced with a polite status region. The list search is local to the already tenant-scoped page of mock results.
+The list and detail views handle initial loading, empty results, no search matches, request errors with retry, stale snapshots, not-found runs, connected/reconnecting/recovering/recovery-incomplete/history-unavailable/disconnected states, waiting approval, and completed/failed/cancelled outcomes. Snapshot failures and unavailable history retain the known run state and expose a retry path; timeline completeness is not implied by a successful snapshot. The timeline is a semantic ordered list, and connection status is announced with a polite status region. The list search is local to the already tenant-scoped page of mock results.
 
 ## Tests
 
-- `schemas/run.test.ts` — valid fixtures, invalid status/sequence, strict payload and unknown-field rejection.
-- `utils/run-events.test.ts` — ordering, duplicate IDs/sequences, gap detection and lifecycle transitions.
-- `services/run-service.test.ts` — response validation, ID encoding, HTTP error mapping, SSE event validation and cleanup.
-- `server/handlers.test.ts` — authentication, tenant isolation, response redaction, mock failure, bridge-unavailable behavior, approval reconciliation and SSE route authorization.
-- `e2e/runs.spec.ts` — list/search, live timeline, approval navigation and reconciliation, terminal outcomes, empty/error and reconnect scenarios.
+- `schemas/run.test.ts` — fixture and event/run association validation, invalid status/sequence, strict payload and recovery-control validation.
+- `utils/run-events.test.ts` — run-scoped ordering, duplicate IDs/sequences, gap fill, snapshot reconciliation, terminal status protection and lifecycle transitions.
+- `services/run-service.test.ts` — snapshot validation/deduplication, cursor handoff, bounded reconnect attempts, SSE event/control validation and cleanup.
+- `server/handlers.test.ts` — authentication, tenant isolation, response redaction, snapshot failures, cursor expiration, history availability, process-restart simulation and SSE route authorization.
+- `e2e/runs.spec.ts` — list/search, live timeline, approval navigation and reconciliation, terminal outcomes, cursor expiration, history unavailable, snapshot retry and completion during disconnection.
 
 Run the repository checks using the commands in `CLAUDE.md`. Results should be reported from the actual execution environment; the mock tests do not establish bridge compatibility or durability.
 
 ## Limitations and real SSE prerequisites
 
-Run fixtures and decisions are in-memory and reset on process restart. The UI currently has no server-side run filters or pagination. The mock stream replays fixture history and keeps a connection open; it is not a production event broker or durable event log.
+Run fixtures and decisions are in-memory and reset on process restart. Recovery metadata and cursor controls are local mock behavior. Reconnect retries are bounded, but use the browser's native EventSource retry interval rather than exponential backoff. Snapshot payloads have no version/revision field, so the client cannot determine freshness between two otherwise valid nonterminal snapshots. The UI currently has no server-side run filters or pagination. The mock stream is not a production event broker or durable event log.
 
 Before enabling a real adapter, obtain the authoritative bridge contract for run list/detail operations, authentication and tenant enforcement, event transport, event IDs/order, cursor/replay and reconnect semantics, lifecycle mapping, error behavior, and whether event snapshots are authoritative. Do not infer endpoint paths or payload compatibility from this mock contract.

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { runFixtures } from "@/mocks/fixtures/runs";
-import { runDetailSchema, runEventSchema } from "./run";
+import {
+  runDetailSchema,
+  runEventSchema,
+  runStreamRecoverySchema,
+} from "./run";
 
 describe("run timeline schemas", () => {
   it("accepts the deterministic run snapshots and ordered events", () => {
@@ -47,6 +51,38 @@ describe("run timeline schemas", () => {
       runDetailSchema.safeParse({
         ...runFixtures[0],
         actionIds: ["../other"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only scoped, supported stream recovery controls", () => {
+    expect(
+      runStreamRecoverySchema.safeParse({
+        runId: "run_0100",
+        reason: "cursor-expired",
+      }).success,
+    ).toBe(true);
+    expect(
+      runStreamRecoverySchema.safeParse({
+        runId: "run_0100",
+        reason: "cursor-expired",
+        token: "secret",
+      }).success,
+    ).toBe(false);
+    expect(
+      runStreamRecoverySchema.safeParse({
+        runId: "other",
+        reason: "unknown",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects snapshot events that belong to a different run", () => {
+    const run = runFixtures[0];
+    expect(
+      runDetailSchema.safeParse({
+        ...run,
+        events: [{ ...run.events[0], runId: "run_0101" }],
       }).success,
     ).toBe(false);
   });

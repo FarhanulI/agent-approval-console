@@ -23,7 +23,7 @@ import { getRunsBackend } from "./get-runs-backend";
 import { logServerEvent } from "@/lib/server/logger";
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const eventIdSchema = z.string().max(128);
+const eventIdSchema = z.string().min(1).max(128);
 type Deps = { backend?: RunsBackend; actions?: ActionsBackend };
 type RunReadAuthorization =
   | { ok: false; response: Response }
@@ -183,7 +183,10 @@ export async function handleGetRun(
 
   const backend = deps.backend ?? getRunsBackend();
   const actions = deps.actions ?? getBackend();
-  if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
+  if (
+    backend.kind === "mock" &&
+    ["malformed", "snapshot-malformed"].includes(getRunsScenario().kind)
+  ) {
     return jsonResponse({ run: { id: runId } }, requestId);
   }
   try {
@@ -195,6 +198,14 @@ export async function handleGetRun(
       }).allowed
     ) {
       return runNotFound(requestId);
+    }
+    if (stored.detail.id !== runId) {
+      return errorResponse(
+        502,
+        "bad_gateway",
+        "The run backend could not complete the request.",
+        requestId,
+      );
     }
     if (
       stored.detail.actionIds.length > 0 &&
@@ -245,13 +256,15 @@ export async function handleSubscribeRunEvents(
 
   const backend = deps.backend ?? getRunsBackend();
   if (backend.kind === "mock" && getRunsScenario().kind === "malformed") {
-    return createRunEventStream(request, [], requestId, {
+    return createRunEventStream(request, runId, [], requestId, {
       malformed: true,
       delayMs: 0,
     });
   }
 
-  const lastEventId = request.headers.get("last-event-id");
+  const url = new URL(request.url);
+  const lastEventId =
+    request.headers.get("last-event-id") ?? url.searchParams.get("cursor");
   if (lastEventId && !eventIdSchema.safeParse(lastEventId).success) {
     return errorResponse(
       400,
@@ -275,15 +288,25 @@ export async function handleSubscribeRunEvents(
     ) {
       return runNotFound(requestId);
     }
+    if (result.history === "cursor-expired" || result.history === "unavailable") {
+      return createRunEventStream(request, runId, [], requestId, {
+        recovery:
+          result.history === "cursor-expired"
+            ? "cursor-expired"
+            : "history-unavailable",
+        delayMs: 0,
+      });
+    }
     if (backend.kind === "mock" && consumeRunStreamDisconnect()) {
-      return createRunEventStream(request, [], requestId, {
+      return createRunEventStream(request, runId, [], requestId, {
         disconnect: true,
         delayMs: 0,
       });
     }
     const scenario = getRunsScenario();
-    return createRunEventStream(request, result.events, requestId, {
+    return createRunEventStream(request, runId, result.events, requestId, {
       delayMs: scenario.kind === "delayed" ? scenario.delayMs ?? 300 : 80,
+      closeAfterEvents: result.closeAfterEvents,
     });
   } catch (error) {
     return backendFailure(error, requestId);
@@ -294,11 +317,35 @@ function runNotFound(requestId: string) {
   return errorResponse(404, "not_found", "Run not found.", requestId);
 }
 
+function waitForStreamDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (delayMs <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
+
 function createRunEventStream(
   request: Request,
+  runId: string,
   events: readonly RunEvent[],
   requestId: string,
-  options: { delayMs: number; malformed?: boolean; disconnect?: boolean },
+  options: {
+    delayMs: number;
+    malformed?: boolean;
+    disconnect?: boolean;
+    recovery?: "cursor-expired" | "history-unavailable";
+    closeAfterEvents?: boolean;
+  },
 ) {
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -307,8 +354,18 @@ function createRunEventStream(
       const enqueue = (value: string) =>
         controller.enqueue(encoder.encode(value));
       try {
+        enqueue("retry: 250\n\n");
         if (options.disconnect) {
-          enqueue("retry: 100\n\n");
+          controller.close();
+          return;
+        }
+        if (options.recovery) {
+          enqueue(
+            `event: run-recovery\ndata: ${JSON.stringify({
+              runId,
+              reason: options.recovery,
+            })}\n\n`,
+          );
           controller.close();
           return;
         }
@@ -321,9 +378,13 @@ function createRunEventStream(
               `id: ${event.id}\nevent: run-event\ndata: ${JSON.stringify(event)}\n\n`,
             );
             if (options.delayMs > 0) {
-              await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+              await waitForStreamDelay(options.delayMs, request.signal);
             }
           }
+        }
+        if (options.closeAfterEvents) {
+          controller.close();
+          return;
         }
         if (request.signal.aborted) {
           controller.close();

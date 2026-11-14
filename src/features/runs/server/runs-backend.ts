@@ -17,10 +17,21 @@ export type RunListEntry = {
   summary: RunSummary;
 };
 
-export type RunEventsResult = {
-  tenantId: string;
-  events: RunEvent[];
-};
+export type RunEventsResult =
+  | {
+      tenantId: string;
+      history: "available";
+      events: RunEvent[];
+      closeAfterEvents?: boolean;
+    }
+  | {
+      tenantId: string;
+      history: "cursor-expired";
+    }
+  | {
+      tenantId: string;
+      history: "unavailable";
+    };
 
 export interface RunsBackend {
   readonly kind: "mock" | "bridge";

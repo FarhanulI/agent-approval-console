@@ -71,4 +71,62 @@ test.describe("live run timeline", () => {
     await expect(page.getByText("Live updates connected.")).toBeVisible();
     await expect(page.getByText("Sequence 4")).toBeVisible();
   });
+
+  test("recovers from an expired replay cursor without duplicating timeline entries", async ({
+    page,
+  }) => {
+    await mockControl(page.context().request, "runs", { kind: "expired-cursor" });
+    await page.goto("/runs/run_0101");
+
+    await expect(page.getByText("Live updates connected.")).toBeVisible();
+    const events = page.getByRole("list", { name: "Run events" });
+    await expect(events.locator("li")).toHaveCount(4);
+    await expect(events.getByText("Sequence 4")).toBeVisible();
+  });
+
+  test("shows incomplete recovery after snapshot failure and retries successfully", async ({
+    page,
+  }) => {
+    await mockControl(page.context().request, "runs", {
+      kind: "snapshot-failure-on-recovery",
+    });
+    await page.goto("/runs/run_0101");
+
+    await expect(
+      page.getByText(/Run recovery is incomplete\. Some event history may be missing/),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry recovery" })).toBeVisible();
+
+    await mockControl(page.context().request, "runs", { kind: "ok" });
+    await page.getByRole("button", { name: "Retry recovery" }).click();
+    await expect(page.getByText("Live updates connected.")).toBeVisible();
+    await expect(
+      page.getByRole("list", { name: "Run events" }).locator("li"),
+    ).toHaveCount(4);
+  });
+
+  test("marks unavailable history explicitly while retaining the run snapshot", async ({
+    page,
+  }) => {
+    await mockControl(page.context().request, "runs", { kind: "history-unavailable" });
+    await page.goto("/runs/run_0101");
+
+    await expect(page.getByText(/Event history is unavailable/)).toBeVisible();
+    await expect(page.getByText("Sequence 4")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry recovery" })).toBeVisible();
+  });
+
+  test("reconciles a run that completes while the stream is interrupted", async ({ page }) => {
+    await mockControl(page.context().request, "runs", {
+      kind: "run-completes-during-disconnect",
+    });
+    await page.goto("/runs/run_0101");
+
+    await expect(page.getByText("Completed", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("The mock run completed while its event stream was disconnected."),
+    ).toBeVisible();
+    await expect(page.getByText(/not active.*snapshot/i)).toBeVisible();
+    await expect(page.getByText("Sequence 5")).toBeVisible();
+  });
 });
