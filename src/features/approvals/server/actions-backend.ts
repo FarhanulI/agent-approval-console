@@ -92,7 +92,10 @@ export type BulkDecideOutcome =
 
 export type RecordedLookup =
   | { kind: "none" }
-  | { kind: "replay"; result: { status: ApprovalStatus; recordVersion: number } }
+  | {
+      kind: "replay";
+      result: { status: ApprovalStatus; recordVersion: number };
+    }
   | { kind: "key-reuse" };
 
 /**
@@ -105,8 +108,14 @@ export type RecordedLookup =
 export interface ActionsBackend {
   readonly kind: "mock" | "bridge";
   /** Must return only actions in `ctx.principal.tenantIds`. */
-  listActions(ctx: BackendContext, query: ActionListQuery): Promise<ActionListResponse>;
-  getAction(ctx: BackendContext, actionId: string): Promise<PendingAction | undefined>;
+  listActions(
+    ctx: BackendContext,
+    query: ActionListQuery,
+  ): Promise<ActionListResponse>;
+  getAction(
+    ctx: BackendContext,
+    actionId: string,
+  ): Promise<PendingAction | undefined>;
   findRecordedDecision(
     ctx: BackendContext,
     scope: string,
